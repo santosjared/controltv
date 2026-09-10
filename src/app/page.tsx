@@ -1,6 +1,6 @@
 import { ControlTvDashboard } from "@/features/control-tv/components/control-tv-dashboard";
-import { televisions } from "@/features/control-tv/data/televisions";
+import { StoreProvider } from "./store-provider";
 
 export default function HomePage() {
-  return <ControlTvDashboard initialTelevisions={televisions} />;
+  return <StoreProvider><ControlTvDashboard /></StoreProvider>;
 }
