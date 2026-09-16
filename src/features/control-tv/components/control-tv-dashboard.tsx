@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useState, type CSSProperties, type DragEvent } from "react";
 import {
   Bell,
+  AlertTriangle,
   ChevronRight,
   CircleStop,
   FileVideo,
+  EyeOff,
   ImageIcon,
   LoaderCircle,
   Maximize2,
@@ -13,6 +15,7 @@ import {
   MonitorPlay,
   Pause,
   Play,
+  Repeat2,
   Search,
   Send,
   Settings,
@@ -20,10 +23,12 @@ import {
   Video,
   Volume2,
   Wifi,
+  X,
 } from "lucide-react";
 import type { Television, TelevisionConnectionStatus, TelevisionStatus } from "../types";
 import { useGetTelevisionsQuery, useRegisterConnectedTvMutation } from "../api/televisions-api";
-import { useConnectedTvs, type MediaReadyState } from "../hooks/use-connected-tvs";
+import { useConnectedTvs, type AdminCommandEvent, type MediaErrorState, type MediaReadyState } from "../hooks/use-connected-tvs";
+import { normalizeContentType } from "../api/tv-adapter";
 import { useMediaTransfer } from "../hooks/use-media-transfer";
 import { MEDIA_FILE_ACCEPT } from "../utils/media-file";
 
@@ -51,6 +56,10 @@ const statusPanelStyles: Record<TelevisionStatus, string> = {
   offline: "bg-[#d74747]",
 };
 
+const playbackLabels = { paused: "Pausado", stopped: "Detenido" } as const;
+const playbackStyles = { paused: "bg-[#e1a12d]", stopped: "bg-[#68727d]" } as const;
+const playbackBorderStyles = { paused: "border-l-[#e1a12d]", stopped: "border-l-[#68727d]" } as const;
+
 const connectionLabels: Record<TelevisionConnectionStatus, string> = {
   online: "En línea",
   "low-signal": "Señal baja",
@@ -73,8 +82,8 @@ const emptyTelevisions: Television[] = [];
 
 export function ControlTvDashboard() {
   const { data = emptyTelevisions, isLoading, isFetching, error, refetch } = useGetTelevisionsQuery(undefined, { refetchOnFocus: true, refetchOnReconnect: true });
-  const { socketDevices, onlineTvIds, lowSignalTvIds, hasStatusSnapshot, mediaReadyByTvId, isSocketConnected } = useConnectedTvs();
-  // Cambios visuales locales; no se envían comandos sin endpoints confirmados.
+  const { socketDevices, onlineTvIds, lowSignalTvIds, hasStatusSnapshot, mediaReadyByTvId, mediaErrorByTvId, latestMediaError, dismissMediaError, mediaControlByTvId, sendAdminCommand, isSocketConnected } = useConnectedTvs();
+  // Estado optimista local; las confirmaciones posteriores de la TV tienen prioridad.
   const [overrides, setOverrides] = useState<Record<string, Partial<Television>>>({});
   const sourceDevices = error ? emptyTelevisions : data;
   const devices = useMemo(() => {
@@ -84,17 +93,25 @@ export function ControlTvDashboard() {
     return sourceDevices.map((device) => {
       const localDevice = { ...device, ...overrides[device.id] };
       const tvCode = device.tvCode ?? device.id;
+      const mediaControl = mediaControlByTvId[tvCode];
       const isLowSignal = hasStatusSnapshot && lowSignalIds.has(tvCode);
       const isOnline = hasStatusSnapshot && onlineIds.has(tvCode);
-
-      if (!isOnline) return { ...localDevice, status: "offline" as const, connectionStatus: "offline" as const };
-      return {
+      const synchronizedDevice = {
         ...localDevice,
-        status: localDevice.status === "offline" ? "available" as const : localDevice.status,
+        ...(mediaControl?.status ? { status: mediaControl.status } : {}),
+        ...(mediaControl?.playbackState ? { playbackState: mediaControl.playbackState } : {}),
+        ...(mediaControl?.volume !== undefined ? { volume: mediaControl.volume } : {}),
+        ...(mediaControl?.repeat !== undefined ? { repeat: mediaControl.repeat } : {}),
+      };
+
+      if (!isOnline) return { ...synchronizedDevice, status: "offline" as const, connectionStatus: "offline" as const };
+      return {
+        ...synchronizedDevice,
+        status: synchronizedDevice.status === "offline" ? "available" as const : synchronizedDevice.status,
         connectionStatus: isLowSignal ? "low-signal" as const : "online" as const,
       };
     });
-  }, [sourceDevices, overrides, onlineTvIds, lowSignalTvIds, hasStatusSnapshot]);
+  }, [sourceDevices, overrides, onlineTvIds, lowSignalTvIds, hasStatusSnapshot, mediaControlByTvId]);
   const [registeredPendingIds, setRegisteredPendingIds] = useState<string[]>([]);
   const pendingDevices = (socketDevices ?? emptyTelevisions).filter((device) => !registeredPendingIds.includes(device.id));
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -121,7 +138,7 @@ export function ControlTvDashboard() {
 
   const online = devices.filter((device) => device.connectionStatus !== "offline").length;
   const lowSignal = devices.filter((device) => device.connectionStatus === "low-signal").length;
-  const playing = devices.filter((device) => device.connectionStatus !== "offline" && device.status === "playing").length;
+  const playing = devices.filter((device) => device.connectionStatus !== "offline" && device.playbackState === "playing").length;
   const offline = devices.filter((device) => device.connectionStatus === "offline").length;
 
   return (
@@ -168,17 +185,38 @@ export function ControlTvDashboard() {
           </div>
           <div className="grid max-h-145 grid-cols-1 gap-x-8 gap-y-8 overflow-y-auto px-2 pb-4 sm:grid-cols-2">
             {visibleDevices.map((device) => (
-              <DeviceCard key={device.id} device={device} mediaReady={mediaReadyByTvId[device.tvCode ?? device.id]} selected={device.id === selected?.id} onSelect={() => setSelectedId(device.id)} onMediaDrop={(file, kind) => assignMedia(device.id, file, kind)} />
+              <DeviceCard key={device.id} device={device} mediaReady={mediaReadyByTvId[device.tvCode ?? device.id]} mediaError={mediaErrorByTvId[device.tvCode ?? device.id]} selected={device.id === selected?.id} onSelect={() => setSelectedId(device.id)} onMediaDrop={(file, kind) => assignMedia(device.id, file, kind)} />
             ))}
             {isLoading && <p role="status">Cargando televisores registrados…</p>}
             {error && <div role="alert"><p>No se pudieron cargar los televisores registrados.</p><button className="mt-3 rounded bg-[#236b5b] px-4 py-2 text-white" disabled={isFetching} onClick={() => refetch()}>Reintentar</button></div>}
             {!isLoading && !error && visibleDevices.length === 0 && <p className="text-[#666970]">{devices.length === 0 ? "No hay televisores registrados." : "No encontramos salas con ese nombre."}</p>}
           </div>
         </section>
-        {selected ? <div><ControlPanel key={selected.id} device={selected} mediaReady={mediaReadyByTvId[selected.tvCode ?? selected.id]} onChange={updateSelected} /></div> : <aside className="rounded-2xl bg-white p-7 text-[#666970]">Selecciona un televisor para ver su panel de control.</aside>}
+        {selected ? <div><ControlPanel key={selected.id} device={selected} mediaReady={mediaReadyByTvId[selected.tvCode ?? selected.id]} mediaError={mediaErrorByTvId[selected.tvCode ?? selected.id]} onCommand={sendAdminCommand} onChange={updateSelected} /></div> : <aside className="rounded-2xl bg-white p-7 text-[#666970]">Selecciona un televisor para ver su panel de control.</aside>}
       </div>
       {deviceToRegister && <RegisterDeviceDialog device={deviceToRegister} onCancel={() => setDeviceToRegister(null)} onRegistered={() => { setRegisteredPendingIds((current) => [...current, deviceToRegister.id]); setDeviceToRegister(null); }} />}
+      {latestMediaError && <MediaErrorDialog error={latestMediaError} onClose={dismissMediaError} />}
     </main>
+  );
+}
+
+function MediaErrorDialog({ error, onClose }: { error: MediaErrorState; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
+      <section role="alertdialog" aria-modal="true" aria-labelledby="media-error-title" className="w-full max-w-md rounded-2xl bg-white p-6 text-[#202226] shadow-[0_24px_70px_rgba(0,0,0,0.32)]">
+        <div className="flex items-start justify-between gap-4">
+          <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-[#fff0f0] text-[#d74747]"><AlertTriangle size={25} /></span>
+          <button type="button" onClick={onClose} aria-label="Cerrar mensaje de error" className="grid size-9 cursor-pointer place-items-center rounded-lg border-0 bg-[#f2f2f2] text-[#555] hover:bg-[#e7e7e7]"><X size={19} /></button>
+        </div>
+        <h2 id="media-error-title" className="mt-5 text-xl font-semibold">No se pudo preparar el contenido</h2>
+        <p className="mt-2 text-[#626468]">{error.message}</p>
+        <dl className="mt-5 grid gap-2 rounded-xl bg-[#f6f7f7] p-4 text-sm">
+          <div className="flex justify-between gap-4"><dt className="text-[#737579]">Televisor</dt><dd className="font-semibold">{error.tvId}</dd></div>
+          <div className="flex justify-between gap-4"><dt className="text-[#737579]">Código</dt><dd className="font-mono font-semibold text-[#b4232c]">{error.code}</dd></div>
+        </dl>
+        <button type="button" onClick={onClose} className="mt-6 h-11 w-full cursor-pointer rounded-xl border-0 bg-[#236b5b] font-semibold text-white hover:bg-[#1d5b4e]">Entendido</button>
+      </section>
+    </div>
   );
 }
 
@@ -248,14 +286,15 @@ function Metric({ label, value, detail, bg }: { label: string; value: number; de
   );
 }
 
-function DeviceCard({ device, mediaReady, selected, onSelect, onMediaDrop }: { device: Television; mediaReady?: MediaReadyState; selected: boolean; onSelect: () => void; onMediaDrop: (file: File, kind: "IMAGE" | "VIDEO") => void }) {
+function DeviceCard({ device, mediaReady, mediaError, selected, onSelect, onMediaDrop }: { device: Television; mediaReady?: MediaReadyState; mediaError?: MediaErrorState; selected: boolean; onSelect: () => void; onMediaDrop: (file: File, kind: "IMAGE" | "VIDEO") => void }) {
   const [isDraggingVideo, setIsDraggingVideo] = useState(false);
-  const [awaitingMedia, setAwaitingMedia] = useState<{ baseline: number; file: File; kind: "IMAGE" | "VIDEO" } | null>(null);
+  const [awaitingMedia, setAwaitingMedia] = useState<{ baseline: number; errorBaseline: number; file: File; kind: "IMAGE" | "VIDEO" } | null>(null);
   const { transfer, progress, isUploading, isComplete, error: dropError } = useMediaTransfer();
   const connectionStatus = device.connectionStatus ?? (device.status === "offline" ? "offline" : "online");
-  const badgeLabel = connectionStatus === "online" ? statusLabels[device.status] : connectionLabels[connectionStatus];
-  const badgeStyle = connectionStatus === "online" ? statusStyles[device.status] : connectionStyles[connectionStatus];
-  const borderStyle = connectionStatus === "online" ? statusBorderStyles[device.status] : connectionBorderStyles[connectionStatus];
+  const playbackBadge = device.playbackState === "paused" || device.playbackState === "stopped" ? device.playbackState : null;
+  const badgeLabel = connectionStatus !== "online" ? connectionLabels[connectionStatus] : playbackBadge ? playbackLabels[playbackBadge] : statusLabels[device.status];
+  const badgeStyle = connectionStatus !== "online" ? connectionStyles[connectionStatus] : playbackBadge ? playbackStyles[playbackBadge] : statusStyles[device.status];
+  const borderStyle = connectionStatus !== "online" ? connectionBorderStyles[connectionStatus] : playbackBadge ? playbackBorderStyles[playbackBadge] : statusBorderStyles[device.status];
 
   useEffect(() => {
     if (!awaitingMedia || !mediaReady || mediaReady.sequence <= awaitingMedia.baseline) return;
@@ -267,6 +306,11 @@ function DeviceCard({ device, mediaReady, selected, onSelect, onMediaDrop }: { d
     });
     return () => { cancelled = true; };
   }, [awaitingMedia, mediaReady, onMediaDrop]);
+
+  useEffect(() => {
+    if (!awaitingMedia || !mediaError || mediaError.sequence <= awaitingMedia.errorBaseline) return;
+    queueMicrotask(() => setAwaitingMedia(null));
+  }, [awaitingMedia, mediaError]);
 
   const handleDragOver = (event: DragEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -282,7 +326,7 @@ function DeviceCard({ device, mediaReady, selected, onSelect, onMediaDrop }: { d
     setAwaitingMedia(null);
     const baseline = mediaReady?.sequence ?? 0;
     const kind = await transfer(file, device.tvCode ?? device.id);
-    if (kind) setAwaitingMedia({ baseline, file, kind });
+    if (kind) setAwaitingMedia({ baseline, errorBaseline: mediaError?.sequence ?? 0, file, kind });
   };
 
   return (
@@ -339,16 +383,31 @@ function DeviceCard({ device, mediaReady, selected, onSelect, onMediaDrop }: { d
   );
 }
 
-function ControlPanel({ device, mediaReady, onChange }: { device: Television; mediaReady?: MediaReadyState; onChange: (changes: Partial<Television>) => void }) {
+function ControlPanel({ device, mediaReady, mediaError, onCommand, onChange }: { device: Television; mediaReady?: MediaReadyState; mediaError?: MediaErrorState; onCommand: (evento: AdminCommandEvent, datos: Record<string, unknown>) => boolean; onChange: (changes: Partial<Television>) => void }) {
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
-  const [awaitingMedia, setAwaitingMedia] = useState<{ baseline: number; fileName: string; kind: "IMAGE" | "VIDEO" } | null>(null);
+  const [awaitingMedia, setAwaitingMedia] = useState<{ baseline: number; errorBaseline: number; fileName: string; kind: "IMAGE" | "VIDEO" } | null>(null);
   const [confirmedMediaKind, setConfirmedMediaKind] = useState<"IMAGE" | "VIDEO" | null>(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
   const { transfer, progress: uploadProgress, isUploading, isComplete, error: uploadError } = useMediaTransfer();
   const connectionStatus = device.connectionStatus ?? (device.status === "offline" ? "offline" : "online");
   const panelStyle = connectionStatus === "low-signal" ? "bg-[#b77916]" : connectionStatus === "offline" ? statusPanelStyles.offline : statusPanelStyles[device.status];
   const indicatorStyle = connectionStatus === "online" ? statusStyles[device.status] : connectionStyles[connectionStatus];
   const controlsReady = !isUploading && !awaitingMedia;
   const effectiveMediaKind = confirmedMediaKind ?? device.contentType;
+  const isImageVisible = effectiveMediaKind === "IMAGE" && device.playbackState === "playing";
+  const playbackLabel = device.playbackState === "paused" ? "Pausado" : device.playbackState === "stopped" ? "Detenido" : device.playbackState === "playing" ? "Reproduciendo" : "Listo";
+  const tvId = device.tvCode ?? device.id;
+  const contentId = mediaReady && typeof mediaReady.content.id === "string" ? mediaReady.content.id : device.currentContentId;
+
+  const sendCommand = (evento: AdminCommandEvent, changes?: Partial<Television>, extra?: Record<string, unknown>) => {
+    const sent = onCommand(evento, { tv_id: tvId, ...(contentId ? { contenido_id: contentId } : {}), ...extra });
+    if (!sent) {
+      setCommandError("No se pudo enviar la orden porque Socket.IO está desconectado.");
+      return;
+    }
+    setCommandError(null);
+    if (changes) onChange(changes);
+  };
 
   useEffect(() => {
     if (!awaitingMedia || !mediaReady || mediaReady.sequence <= awaitingMedia.baseline) return;
@@ -356,12 +415,19 @@ function ControlPanel({ device, mediaReady, onChange }: { device: Television; me
     queueMicrotask(() => {
       if (cancelled) return;
       const contentName = typeof mediaReady.content.nombre === "string" ? mediaReady.content.nombre : awaitingMedia.fileName;
-      setConfirmedMediaKind(awaitingMedia.kind);
-      onChange({ currentContent: contentName, contentType: awaitingMedia.kind, status: "available" });
+      const readyMediaKind = normalizeContentType(mediaReady.content.tipo) ?? awaitingMedia.kind;
+      setConfirmedMediaKind(readyMediaKind);
+      const readyContentId = typeof mediaReady.content.id === "string" ? mediaReady.content.id : undefined;
+      onChange({ currentContent: contentName, currentContentId: readyContentId, contentType: readyMediaKind, status: "available", playbackState: "stopped" });
       setAwaitingMedia(null);
     });
     return () => { cancelled = true; };
   }, [awaitingMedia, mediaReady, onChange]);
+
+  useEffect(() => {
+    if (!awaitingMedia || !mediaError || mediaError.sequence <= awaitingMedia.errorBaseline) return;
+    queueMicrotask(() => setAwaitingMedia(null));
+  }, [awaitingMedia, mediaError]);
 
   const handleFileUpload = async (file?: File) => {
     if (!file) return;
@@ -370,7 +436,7 @@ function ControlPanel({ device, mediaReady, onChange }: { device: Television; me
     setConfirmedMediaKind(null);
     const baseline = mediaReady?.sequence ?? 0;
     const kind = await transfer(file, device.tvCode ?? device.id);
-    if (kind) setAwaitingMedia({ baseline, fileName: file.name, kind });
+    if (kind) setAwaitingMedia({ baseline, errorBaseline: mediaError?.sequence ?? 0, fileName: file.name, kind });
   };
 
   const lastContact = device.lastContactAt
@@ -382,7 +448,7 @@ function ControlPanel({ device, mediaReady, onChange }: { device: Television; me
       <h2 className="m-0 text-[25px] font-semibold text-white">Panel de control</h2>
       <a className="mt-1 mb-6 flex items-center gap-2 text-[17px] font-medium text-zinc-300 no-underline" href={`#${device.id}`}>
         <i aria-hidden="true" className={`size-2.5 shrink-0 rounded-full ring-2 ring-white/25 ${indicatorStyle}`} />
-        <span>{device.room} · {connectionLabels[connectionStatus]}</span>
+        <span>{device.room} · {connectionLabels[connectionStatus]} · {playbackLabel}</span>
       </a>
       <div className="mb-5 grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl bg-black/15 p-3 text-sm text-white/80">
         <span className="truncate"><strong className="text-white">TV:</strong> {device.name}</span>
@@ -397,15 +463,28 @@ function ControlPanel({ device, mediaReady, onChange }: { device: Television; me
         {effectiveMediaKind === "IMAGE"
           ? <ImageIcon aria-hidden="true" size={70} strokeWidth={1.5} className="absolute left-1/2 top-[42%] -translate-x-1/2 -translate-y-1/2 text-[#66706e]" />
           : <MonitorPlay aria-hidden="true" size={70} strokeWidth={1.5} className="absolute left-1/2 top-[42%] -translate-x-1/2 -translate-y-1/2 text-[#66706e]" />}
-        {controlsReady && (
+        {controlsReady && effectiveMediaKind === "IMAGE" && (
           <button
             type="button"
             disabled={device.status === "offline"}
-            onClick={() => onChange({ status: "playing" })}
-            className="absolute left-1/2 top-[42%] grid size-14 -translate-x-1/2 -translate-y-1/2 cursor-pointer place-items-center rounded-2xl border-0 bg-[#ff0033] text-white shadow-lg transition hover:scale-105 hover:bg-[#e6002e] disabled:cursor-not-allowed disabled:bg-[#555]/80"
-            aria-label={effectiveMediaKind === "IMAGE" ? "Mostrar imagen" : "Reproducir video"}
+            onClick={() => sendCommand(isImageVisible ? "media.hide" : "media.show", { status: isImageVisible ? "available" : "playing", playbackState: isImageVisible ? "stopped" : "playing" })}
+            className={`absolute left-1/2 top-[42%] flex h-12 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center gap-2 whitespace-nowrap rounded-xl border-0 px-5 font-semibold shadow-lg transition hover:scale-105 disabled:cursor-not-allowed disabled:bg-[#777] disabled:text-white/70 ${isImageVisible ? "bg-black/75 text-white hover:bg-black/90" : "bg-white text-[#202226] hover:bg-[#f2f2f2]"}`}
+            aria-label={isImageVisible ? "Ocultar imagen" : "Mostrar imagen"}
+            aria-pressed={isImageVisible}
           >
-            {effectiveMediaKind === "IMAGE" ? <ImageIcon size={27} /> : <Play size={28} fill="currentColor" />}
+            {isImageVisible ? <EyeOff size={21} /> : <ImageIcon size={21} />}
+            {isImageVisible ? "Ocultar imagen" : "Mostrar imagen"}
+          </button>
+        )}
+        {controlsReady && effectiveMediaKind !== "IMAGE" && (
+          <button
+            type="button"
+            disabled={device.status === "offline"}
+            onClick={() => sendCommand("media.play", { status: "playing", playbackState: "playing" })}
+            className="absolute left-1/2 top-[42%] grid size-14 -translate-x-1/2 -translate-y-1/2 cursor-pointer place-items-center rounded-2xl border-0 bg-[#ff0033] text-white shadow-lg transition hover:scale-105 hover:bg-[#e6002e] disabled:cursor-not-allowed disabled:bg-[#555]/80"
+            aria-label="Reproducir video"
+          >
+            <Play size={28} fill="currentColor" />
           </button>
         )}
         {!controlsReady && (
@@ -415,27 +494,30 @@ function ControlPanel({ device, mediaReady, onChange }: { device: Television; me
             <small className="text-white/70">Los controles se habilitarán cuando el dispositivo confirme.</small>
           </div>
         )}
-        {controlsReady && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/65 to-transparent px-3.5 pt-10 pb-3">
+        {controlsReady && effectiveMediaKind === "IMAGE" && (
+          <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/95 via-black/60 to-transparent px-4 pt-10 pb-3">
+            <ImageIcon aria-hidden="true" size={18} className="shrink-0 text-white/75" />
+            <span className="truncate text-sm font-medium">{device.currentContent}</span>
+          </div>
+        )}
+        {controlsReady && effectiveMediaKind !== "IMAGE" && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/65 to-transparent px-3.5 pt-10 pb-3">
           <div className="mb-2 h-1 w-full overflow-hidden rounded-full bg-white/35">
-            <div className={`h-full rounded-full ${statusStyles[device.status]}`} style={{ width: device.status === "playing" ? "42%" : "0%" }} />
+            <div className={`h-full rounded-full ${statusStyles[device.status]}`} style={{ width: device.playbackState === "playing" ? "42%" : "0%" }} />
           </div>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              {effectiveMediaKind === "IMAGE" ? (
-                <button type="button" className="cursor-pointer border-0 bg-transparent p-0 text-white" onClick={() => onChange({ status: "playing" })} aria-label="Mostrar imagen"><ImageIcon size={20} /></button>
-              ) : (
-                <button type="button" className="cursor-pointer border-0 bg-transparent p-0 text-white" onClick={() => onChange({ status: device.status === "playing" ? "available" : "playing" })} aria-label={device.status === "playing" ? "Pausar" : "Reproducir"}>
-                  {device.status === "playing" ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
-                </button>
-              )}
-              <button type="button" className="cursor-pointer border-0 bg-transparent p-0 text-white" onClick={() => onChange({ status: "available", currentContent: "Sin reproducción" })} aria-label="Detener"><CircleStop size={20} /></button>
-              {effectiveMediaKind !== "IMAGE" && <><Volume2 aria-hidden="true" size={20} /><input className="volume-range w-14 sm:w-20" aria-label="Volumen del reproductor" title={`Volumen: ${device.volume}%`} type="range" min="0" max="100" value={device.volume} onChange={(event) => onChange({ volume: Number(event.target.value) })} style={{ "--volume": `${device.volume}%` } as CSSProperties} /></>}
+              <button type="button" className="cursor-pointer border-0 bg-transparent p-0 text-white" onClick={() => sendCommand(device.playbackState === "playing" ? "media.pause" : "media.play", { status: device.playbackState === "playing" ? "available" : "playing", playbackState: device.playbackState === "playing" ? "paused" : "playing" })} aria-label={device.playbackState === "playing" ? "Pausar" : "Reproducir"}>
+                {device.playbackState === "playing" ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
+              </button>
+              <button type="button" className="cursor-pointer border-0 bg-transparent p-0 text-white" onClick={() => sendCommand("media.stop", { status: "available", playbackState: "stopped" })} aria-label="Detener"><CircleStop size={20} /></button>
+              <Volume2 aria-hidden="true" size={20} /><input className="volume-range w-14 sm:w-20" aria-label="Volumen del reproductor" title={`Volumen: ${device.volume}%`} type="range" min="0" max="100" value={device.volume} onChange={(event) => { const volume = Number(event.target.value); sendCommand("media.volume", { volume }, { volumen: volume }); }} style={{ "--volume": `${device.volume}%` } as CSSProperties} /><button type="button" aria-pressed={Boolean(device.repeat)} aria-label={device.repeat ? "Desactivar repetición" : "Repetir video"} title={device.repeat ? "Repetición activada" : "Repetir video"} onClick={() => { const repeat = !device.repeat; sendCommand("media.repeat", { repeat }, { repetir: repeat }); }} className={`relative grid size-7 cursor-pointer place-items-center rounded-md border-0 transition ${device.repeat ? "bg-white text-[#246bfd]" : "bg-transparent text-white hover:bg-white/15"}`}><Repeat2 size={19} />{device.repeat && <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-[#39dc9a]" />}</button>
               <span className="max-w-40 truncate text-xs font-medium">{device.currentContent}</span>
             </div>
             <div className="flex items-center gap-3"><Settings aria-hidden="true" size={19} /><Maximize2 aria-hidden="true" size={19} /></div>
           </div>
         </div>}
       </div>
+      {commandError && <p role="alert" className="mt-3 rounded-lg bg-black/25 px-3 py-2 text-sm text-white">{commandError}</p>}
       <div className="mt-6 border-b border-white/25 pb-6">
         <strong className="mb-3 block text-lg">Subir contenido</strong>
         <label aria-busy={isUploading} className="flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed border-white/45 bg-black/10 px-4 py-3 transition hover:border-white/80 hover:bg-black/15" htmlFor={`content-upload-${device.id}`}>
@@ -488,8 +570,8 @@ function ControlPanel({ device, mediaReady, onChange }: { device: Television; me
         <select disabled={!controlsReady} className="h-12 w-full rounded-md border border-white/50 bg-white px-3 text-[#202226] disabled:cursor-not-allowed disabled:opacity-60" aria-label="Contenido disponible" value={device.currentContent} onChange={(event) => onChange({ currentContent: event.target.value })}>
           <option>Información para pacientes</option><option>Campaña de vacunación</option><option>Canal institucional</option><option>Menú y horarios</option><option>Turnos de atención</option><option>Sin conexión</option>
         </select>
-        <button className="mt-3 flex h-10.5 w-full cursor-pointer items-center justify-center gap-2 rounded-md border-0 bg-white font-medium text-[#202226] transition hover:bg-[#f2f2f2] disabled:cursor-not-allowed disabled:bg-white/40 disabled:text-white/70" disabled={device.status === "offline" || !controlsReady} onClick={() => onChange({ status: "playing" })}>
-          <Send size={17} /> {effectiveMediaKind === "IMAGE" ? "Mostrar en pantalla" : "Reproducir en pantalla"}
+        <button className="mt-3 flex h-10.5 w-full cursor-pointer items-center justify-center gap-2 rounded-md border-0 bg-white font-medium text-[#202226] transition hover:bg-[#f2f2f2] disabled:cursor-not-allowed disabled:bg-white/40 disabled:text-white/70" disabled={device.status === "offline" || !controlsReady} onClick={() => sendCommand(effectiveMediaKind === "IMAGE" ? (isImageVisible ? "media.hide" : "media.show") : "media.play", { status: effectiveMediaKind === "IMAGE" && isImageVisible ? "available" : "playing", playbackState: effectiveMediaKind === "IMAGE" && isImageVisible ? "stopped" : "playing" })}>
+          {effectiveMediaKind === "IMAGE" && isImageVisible ? <EyeOff size={17} /> : <Send size={17} />} {effectiveMediaKind === "IMAGE" ? (isImageVisible ? "Ocultar de pantalla" : "Mostrar en pantalla") : "Reproducir en pantalla"}
         </button>
       </div>
     </aside>

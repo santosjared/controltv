@@ -33,6 +33,18 @@ Las imágenes y videos se transfieren como `multipart/form-data` (campo `file`) 
 ocultos y se muestra un indicador de espera. Los videos habilitan reproducción,
 pausa, volumen y detener; las imágenes habilitan la acción de mostrar en pantalla.
 
+Las órdenes salen por el mismo evento Socket.IO `admin.message` con el formato
+`{ evento, datos }`. Se usan `media.play`, `media.pause`, `media.stop`, `media.volume`,
+`media.repeat` y `media.show`. `datos` siempre lleva `tv_id`, incluye `contenido_id`
+cuando se conoce, para volumen añade `volumen` entre 0 y 100 y para repetición añade
+`repetir` como booleano.
+
+El backend y las TVs pueden emitir esos mismos mensajes por `admin.message`. El panel
+los procesa por `datos.tv_id`: `media.play`/`media.show` cambian a reproduciendo,
+`media.pause` cambia a pausado, `media.stop` cambia a detenido, `media.volume` sincroniza `volumen`
+y `media.repeat` sincroniza `repetir`. El último mensaje recibido de la TV prevalece
+sobre el estado optimista aplicado al hacer clic en el administrador.
+
 Los elementos recibidos por Socket.IO se muestran como notificaciones pendientes,
 no como televisores registrados. El registro envía a `POST /tvs/register` exactamente
 `tv_id`, `model`, `version_android`, `ip`, `nombre`, `sala` y `ubicacion`. El botón Identificar

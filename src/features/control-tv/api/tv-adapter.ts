@@ -1,4 +1,4 @@
-import type { Television } from "../types";
+import type { Television, TelevisionContentType } from "../types";
 
 export type ConnectedTvDto = {
   tvId: string;
@@ -66,6 +66,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
 
+export function normalizeContentType(value: unknown): TelevisionContentType | undefined {
+  if (typeof value !== "string") return undefined;
+
+  const normalized = value.trim().toUpperCase();
+  if (["IMAGE", "IMAGEN", "IMG", "PHOTO", "FOTO"].includes(normalized)) return "IMAGE";
+  if (["VIDEO", "VID"].includes(normalized)) return "VIDEO";
+  return undefined;
+}
+
 export function isRegisteredTvDto(value: unknown): value is RegisteredTvDto {
   if (!isRecord(value) || !isRecord(value.sala)) return false;
 
@@ -107,6 +116,7 @@ export function mapRegisteredTv(device: RegisteredTvDto): Television {
     name: device.nombre?.trim() || device.tv_id,
     ip: device.ip,
     status,
+    playbackState: playbackState === "PLAYING" ? "playing" : playbackState === "PAUSED" ? "paused" : "stopped",
     currentContent: content?.nombre || "Sin reproducción",
     volume: device.estado?.volumen ?? 0,
     model: device.model,
@@ -114,7 +124,8 @@ export function mapRegisteredTv(device: RegisteredTvDto): Television {
     location: device.sala.ubicacion,
     lastContactAt: device.ultimo_contacto,
     currentContentUrl: content?.url,
-    contentType: content?.tipo,
+    currentContentId: content?.id,
+    contentType: normalizeContentType(content?.tipo),
     playbackPosition: device.estado?.posicion_segundos ?? 0,
     repeat: device.estado?.repetir ?? false,
   };
