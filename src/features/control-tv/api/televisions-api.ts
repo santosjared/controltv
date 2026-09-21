@@ -12,6 +12,15 @@ export type RegisterConnectedTv = {
   ubicacion: string;
 };
 
+export type UpdateTelevision = {
+  id: string;
+  tv_id: string;
+  nombre: string;
+  sala_id: string;
+  sala: string;
+  ubicacion: string;
+};
+
 function isTelevision(value: unknown): value is Television {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
@@ -44,7 +53,15 @@ export const televisionsApi = createApi({
       query: (input) => ({ url: "tvs/register", method: "POST", body: input }),
       invalidatesTags: ["Televisions"],
     }),
+    updateTelevision: builder.mutation<unknown, UpdateTelevision>({
+      query: ({ id, ...body }) => ({ url: `tvs/${encodeURIComponent(id)}`, method: "PUT", body }),
+      invalidatesTags: ["Televisions"],
+    }),
+    deleteTelevision: builder.mutation<unknown, string>({
+      query: (id) => ({ url: `tvs/${encodeURIComponent(id)}`, method: "DELETE" }),
+      invalidatesTags: ["Televisions"],
+    }),
   }),
 });
 
-export const { useGetTelevisionsQuery, useRegisterConnectedTvMutation } = televisionsApi;
+export const { useGetTelevisionsQuery, useRegisterConnectedTvMutation, useUpdateTelevisionMutation, useDeleteTelevisionMutation } = televisionsApi;

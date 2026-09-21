@@ -112,6 +112,7 @@ export function mapRegisteredTv(device: RegisteredTvDto): Television {
   return {
     id: device.id,
     tvCode: device.tv_id,
+    roomId: device.sala.id,
     room: device.sala.nombre,
     name: device.nombre?.trim() || device.tv_id,
     ip: device.ip,
@@ -125,6 +126,7 @@ export function mapRegisteredTv(device: RegisteredTvDto): Television {
     lastContactAt: device.ultimo_contacto,
     currentContentUrl: content?.url,
     currentContentId: content?.id,
+    currentContentSizeBytes: content?.tamano_bytes,
     contentType: normalizeContentType(content?.tipo),
     playbackPosition: device.estado?.posicion_segundos ?? 0,
     repeat: device.estado?.repetir ?? false,

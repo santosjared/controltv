@@ -5,6 +5,13 @@ type UploadMediaOptions = {
   onProgress: (progress: number) => void;
 };
 
+type UploadMediaToManyOptions = {
+  file: File;
+  tvIds: string[];
+  signal?: AbortSignal;
+  onProgress: (progress: number) => void;
+};
+
 function getErrorMessage(xhr: XMLHttpRequest): string {
   try {
     const body = JSON.parse(xhr.responseText) as { message?: string | string[] };
@@ -59,6 +66,56 @@ export function uploadMediaToTv({ file, tvId, signal, onProgress }: UploadMediaO
 
     const formData = new FormData();
     formData.append("file", file, file.name);
+    xhr.send(formData);
+  });
+}
+
+export function uploadMediaToTvs({ file, tvIds, signal, onProgress }: UploadMediaToManyOptions): Promise<unknown> {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (!baseUrl) return Promise.reject(new Error("Falta NEXT_PUBLIC_API_BASE_URL en .env."));
+  if (tvIds.length === 0) return Promise.reject(new Error("No hay televisores seleccionados para la transferencia."));
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const abort = () => xhr.abort();
+    xhr.open("POST", `${baseUrl.replace(/\/$/, "")}/tvs/transferencias`);
+    xhr.setRequestHeader("Accept", "application/json");
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    });
+    xhr.addEventListener("load", () => {
+      signal?.removeEventListener("abort", abort);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(100);
+        try {
+          resolve(xhr.responseText ? JSON.parse(xhr.responseText) : null);
+        } catch {
+          resolve(xhr.responseText);
+        }
+        return;
+      }
+      reject(new Error(getErrorMessage(xhr)));
+    });
+    xhr.addEventListener("error", () => {
+      signal?.removeEventListener("abort", abort);
+      reject(new Error("No se pudo conectar con el backend para transferir el archivo."));
+    });
+    xhr.addEventListener("abort", () => {
+      signal?.removeEventListener("abort", abort);
+      reject(new DOMException("Transferencia cancelada", "AbortError"));
+    });
+
+    if (signal?.aborted) {
+      reject(new DOMException("Transferencia cancelada", "AbortError"));
+      return;
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+    formData.append("tv_ids", JSON.stringify(tvIds));
+    formData.append("senderId", "admin-1");
     xhr.send(formData);
   });
 }

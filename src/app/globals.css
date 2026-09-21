@@ -47,3 +47,51 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: #0875cf;
   box-shadow: 0 0 0 1px #ddd;
 }
+
+.card-volume-range {
+  height: 3px;
+  appearance: none;
+  border-radius: 999px;
+}
+
+.card-volume-range::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  appearance: none;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 22%);
+}
+
+.card-volume-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 22%);
+}
+
+@keyframes tv-snackbar {
+  0% {
+    opacity: 0;
+    transform: translateY(24px) scale(0.97);
+  }
+  10%, 84% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+}
+
+.tv-snackbar {
+  animation: tv-snackbar 4.2s ease-in-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tv-snackbar { animation: none; }
+}

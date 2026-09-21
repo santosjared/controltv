@@ -126,8 +126,7 @@ export function parseAdminMessage(payload: unknown): AdminMessage | null {
     }
     if (event === "media.repeat") {
       const repeat = data.repetir;
-      if (typeof repeat !== "boolean") return null;
-      return { type: "media-control", tvId, event, repeat };
+      return { type: "media-control", tvId, event, ...(typeof repeat === "boolean" ? { repeat } : {}) };
     }
     return { type: "media-control", tvId, event };
   }

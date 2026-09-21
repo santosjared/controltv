@@ -6,6 +6,7 @@ export type TelevisionContentType = "IMAGE" | "VIDEO";
 export type Television = {
   id: string;
   tvCode?: string;
+  roomId?: string;
   room: string;
   name: string;
   ip: string;
@@ -21,6 +22,7 @@ export type Television = {
   lastContactAt?: string;
   currentContentUrl?: string;
   currentContentId?: string;
+  currentContentSizeBytes?: string;
   contentType?: TelevisionContentType;
   playbackPosition?: number;
   repeat?: boolean;

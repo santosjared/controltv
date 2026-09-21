@@ -50,6 +50,25 @@ export function useConnectedTvs() {
     const socket = socketRef.current;
     if (!socket?.connected) return false;
     socket.emit("admin.message", { evento, datos });
+    const tvId = datos.tv_id;
+    if (typeof tvId === "string") {
+      setMediaControlByTvId((current) => {
+        const previous = current[tvId];
+        const isActive = evento === "media.play" || evento === "media.show";
+        const isInactive = evento === "media.pause" || evento === "media.stop" || evento === "media.hide";
+        return {
+          ...current,
+          [tvId]: {
+            ...previous,
+            sequence: (previous?.sequence ?? 0) + 1,
+            status: isActive ? "playing" : isInactive ? "available" : previous?.status,
+            playbackState: isActive ? "playing" : evento === "media.pause" ? "paused" : evento === "media.stop" || evento === "media.hide" ? "stopped" : previous?.playbackState,
+            ...(evento === "media.volume" && typeof datos.volumen === "number" ? { volume: datos.volumen } : {}),
+            ...(evento === "media.repeat" && typeof datos.repetir === "boolean" ? { repeat: datos.repetir } : {}),
+          },
+        };
+      });
+    }
     return true;
   }, []);
 
@@ -115,7 +134,7 @@ export function useConnectedTvs() {
               status,
               playbackState,
               ...(message.volume !== undefined ? { volume: message.volume } : {}),
-              ...(message.repeat !== undefined ? { repeat: message.repeat } : {}),
+              ...(message.event === "media.repeat" ? { repeat: message.repeat ?? !previous?.repeat } : message.repeat !== undefined ? { repeat: message.repeat } : {}),
             },
           };
         });
