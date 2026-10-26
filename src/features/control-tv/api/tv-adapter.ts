@@ -23,6 +23,7 @@ export type RegisteredTvDto = {
   estado: {
     tv_id: string;
     contenido_id: string | null;
+    playlist_id?: string | null;
     estado_reproduccion: string;
     posicion_segundos: number;
     volumen: number;
@@ -124,7 +125,8 @@ export function mapRegisteredTv(device: RegisteredTvDto): Television {
     androidVersion: device.version_android,
     location: device.sala.ubicacion,
     lastContactAt: device.ultimo_contacto,
-    currentContentUrl: content?.url,
+    playlistId: device.estado?.playlist_id ?? undefined,
+    currentContentUrl: content?.id ? `/api/contenidos/${encodeURIComponent(content.id)}/archivo` : undefined,
     currentContentId: content?.id,
     currentContentSizeBytes: content?.tamano_bytes,
     contentType: normalizeContentType(content?.tipo),

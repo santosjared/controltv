@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
-import { Geist } from "next/font/google";
+import { Archivo } from "next/font/google";
 import "./globals.css";
+import { AuthProvider } from "@/features/auth/auth-context";
+import { StoreProvider } from "./store-provider";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const archivo = Archivo({
+  variable: "--font-archivo",
   subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -16,9 +19,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="es"
-      className={`${geistSans.variable} h-full antialiased`}
+      className={`${archivo.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <StoreProvider>
+          <AuthProvider>{children}</AuthProvider>
+        </StoreProvider>
+      </body>
     </html>
   );
 }

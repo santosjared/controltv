@@ -1,6 +1,11 @@
 @import "tailwindcss";
 
 :root {
+  --brand-green: #168051;
+  --brand-green-mid: #106c45;
+  --brand-green-deep: #004d36;
+  --brand-gold: #f4b52b;
+  --brand-emergency: #ad1228;
   --navy: #236b5b;
   --navy-deep: #195447;
   --blue: #236b5b;
@@ -13,6 +18,10 @@
   --canvas: #f3f3f3;
 }
 
+.brand-green-surface {
+  background: linear-gradient(to bottom right, var(--brand-green), var(--brand-green-mid), var(--brand-green-deep));
+}
+
 * { box-sizing: border-box; }
 
 html, body { margin: 0; min-height: 100%; }
@@ -20,11 +29,22 @@ html, body { margin: 0; min-height: 100%; }
 body {
   background: var(--canvas);
   color: var(--ink);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-archivo), Arial, Helvetica, sans-serif;
+  font-feature-settings: "kern" 1, "liga" 1;
 }
 
-button, input, select { font: inherit; }
-button { color: inherit; }
+@layer base {
+  button, input, select { font: inherit; }
+  button { color: inherit; }
+  button:not(:disabled):not([aria-disabled="true"]),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+}
 
 button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 3px solid rgb(36 107 253 / 25%);
@@ -92,6 +112,20 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   animation: tv-snackbar 4.2s ease-in-out both;
 }
 
+@keyframes emergency-ticker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.emergency-ticker {
+  animation: emergency-ticker 28s linear infinite;
+}
+
+.emergency-ticker:hover {
+  animation-play-state: paused;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tv-snackbar { animation: none; }
+  .emergency-ticker { animation: none; }
 }

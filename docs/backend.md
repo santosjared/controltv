@@ -9,7 +9,7 @@
 - Reinicia Next.js tras modificar `.env`. `.env.example` contiene la configuración de ejemplo.
 
 El navegador usa RTK Query → `/api/tvs` de Next.js → `/tvs` del backend.
-La ruta de Next.js evita CORS y tiene un tiempo límite de 10 segundos. Solo admite GET.
+La ruta de Next.js evita CORS y tiene un tiempo límite de 10 segundos. También reenvía las operaciones del CRUD.
 El store se crea por instancia de Provider, sin singleton compartido entre solicitudes.
 
 Se muestran carga, errores con reintento y lista vacía. No se sustituyen respuestas
@@ -33,17 +33,11 @@ Las imágenes y videos se transfieren como `multipart/form-data` (campo `file`) 
 ocultos y se muestra un indicador de espera. Los videos habilitan reproducción,
 pausa, volumen y detener; las imágenes habilitan la acción de mostrar en pantalla.
 
-Las órdenes salen por el mismo evento Socket.IO `admin.message` con el formato
-`{ evento, datos }`. Se usan `media.play`, `media.pause`, `media.stop`, `media.volume`,
-`media.repeat` y `media.show`. `datos` siempre lleva `tv_id`, incluye `contenido_id`
-cuando se conoce, para volumen añade `volumen` entre 0 y 100 y para repetición añade
-`repetir` como booleano.
-
-El backend y las TVs pueden emitir esos mismos mensajes por `admin.message`. El panel
-los procesa por `datos.tv_id`: `media.play`/`media.show` cambian a reproduciendo,
-`media.pause` cambia a pausado, `media.stop` cambia a detenido, `media.volume` sincroniza `volumen`
-y `media.repeat` sincroniza `repetir`. El último mensaje recibido de la TV prevalece
-sobre el estado optimista aplicado al hacer clic en el administrador.
+Las órdenes usan exclusivamente `admin.message` con `{ evento, datos }`.
+Cada clic genera `request_id` y un solo mensaje con `tv_ids` (1–100 TVs), incluso
+para una TV. La conexión envía `auth.token` y exige `tvs.control`. Las confirmaciones
+`media.result` se correlacionan por petición, TV y acción, con resultados parciales.
+El frontend no presupone éxito al emitir. Ver [socket-playback.md](socket-playback.md).
 
 Los elementos recibidos por Socket.IO se muestran como notificaciones pendientes,
 no como televisores registrados. El registro envía a `POST /tvs/register` exactamente
@@ -61,7 +55,7 @@ a `POST /tvs/:tv_id/transferencias`. La conexión directa permite mostrar el pro
 real de subida, por lo que el backend HTTP debe permitir el origen del panel mediante CORS.
 El cliente admite solamente imagen o video y limita cada archivo a 100 MB.
 
-Agregar televisores, controlar reproducción y subir archivos requieren endpoints,
-métodos y DTOs todavía no proporcionados. Los controles existentes son una vista
-previa local señalada en la interfaz: no transmiten videos ni guardan cambios en
-el servidor. Un archivo seleccionado actualmente solo aporta su nombre.
+Los formatos de envío y recepción para playlists, videos e imágenes están en
+[socket-playback.md](socket-playback.md). Ese contrato conserva `admin.message` y
+los controles existentes y el formato agrupado con `tv_ids`, `request_id` y
+resultados individuales `media.result`, confirmado por el backend.

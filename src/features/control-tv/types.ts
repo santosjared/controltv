@@ -26,4 +26,6 @@ export type Television = {
   contentType?: TelevisionContentType;
   playbackPosition?: number;
   repeat?: boolean;
+  shuffle?: boolean;
+  playlistId?: string;
 };

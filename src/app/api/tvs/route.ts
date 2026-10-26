@@ -1,19 +1,25 @@
-export async function GET() {
+import { backendAuthHeaders } from "@/features/auth/server-auth";
+
+export async function GET(request: Request) {
   const baseUrl = process.env.API_BASE_URL;
   if (!baseUrl) {
     return Response.json({ message: "Falta API_BASE_URL en .env." }, { status: 500 });
   }
 
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/tvs`, {
+    const params = new URLSearchParams();
+    const incoming = new URL(request.url).searchParams;
+    for (const key of ["page", "limit", "search"]) {
+      const value = incoming.get(key);
+      if (value) params.set(key, value);
+    }
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/tvs${params.size ? `?${params}` : ""}`, {
       cache: "no-store",
-      headers: { Accept: "application/json" },
+      headers: await backendAuthHeaders({ Accept: "application/json" }),
       signal: AbortSignal.timeout(10000),
     });
-    if (!response.ok) {
-      return Response.json({ message: `El backend respondió HTTP ${response.status}.` }, { status: response.status });
-    }
-    return Response.json(await response.json(), { headers: { "Cache-Control": "no-store" } });
+    const text = await response.text();
+    return new Response(text || null, { status: response.status, headers: { "Content-Type": response.headers.get("content-type") ?? "application/json", "Cache-Control": "no-store" } });
   } catch {
     return Response.json({ message: "No se pudo consultar el backend de televisores." }, { status: 502 });
   }
@@ -25,7 +31,7 @@ export async function POST(request: Request) {
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/tvs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: await backendAuthHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
       body: JSON.stringify(await request.json()),
       signal: AbortSignal.timeout(10000),
     });

@@ -1,3 +1,5 @@
+import { backendAuthHeaders } from "@/features/auth/server-auth";
+
 type RouteContext = { params: Promise<{ id: string }> };
 
 async function forward(request: Request, context: RouteContext, method: "PUT" | "DELETE") {
@@ -8,7 +10,7 @@ async function forward(request: Request, context: RouteContext, method: "PUT" | 
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/tvs/${encodeURIComponent(id)}`, {
       method,
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: await backendAuthHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
       ...(method === "PUT" ? { body: JSON.stringify(await request.json()) } : {}),
       signal: AbortSignal.timeout(10000),
     });

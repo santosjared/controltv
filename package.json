@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3001",
     "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "start": "next start -p 3001",
+    "lint": "eslint",
+    "test:playback": "node scripts/test-playback-protocol.mjs",
+    "test:integration": "node scripts/test-auth-integration.mjs && node scripts/test-playback-protocol.mjs"
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.12.0",

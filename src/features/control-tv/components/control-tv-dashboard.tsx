@@ -1,13 +1,17 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState, type DragEvent } from "react";
+import { TvVolumeControl } from "./tv-volume-control";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import {
   Bell,
   AlertTriangle,
-  BarChart3,
   CalendarDays,
   Check,
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CircleStop,
   EyeOff,
@@ -29,18 +33,27 @@ import {
   Radio,
   Search,
   Send,
+  Shuffle,
   Trash2,
   UploadCloud,
-  Volume2,
-  VolumeX,
   X,
-  Tv2,
+  ListVideo,
+  Users,
+  Key,
+  LogOut,
 } from "lucide-react";
 import type { Television, TelevisionConnectionStatus, TelevisionStatus } from "../types";
 import { useDeleteTelevisionMutation, useGetTelevisionsQuery, useRegisterConnectedTvMutation, useUpdateTelevisionMutation } from "../api/televisions-api";
 import { useConnectedTvs, type AdminCommandEvent, type MediaErrorState, type MediaReadyState } from "../hooks/use-connected-tvs";
 import { useMediaTransfer } from "../hooks/use-media-transfer";
 import { MEDIA_FILE_ACCEPT } from "../utils/media-file";
+import { useAuth } from "@/features/auth/auth-context";
+import { AppFooter } from "@/components/app-footer";
+import { AppHeader } from "@/components/app-header";
+import { SidebarBrand } from "@/components/sidebar-brand";
+import { DashboardLibraryPanel } from "./dashboard-library-panel";
+import { PlaybackRequestsPanel } from "./playback-requests-panel";
+import { selectedPlaybackTargets, type PlaybackAction, type PlaybackSelection } from "../api/playback-protocol";
 
 const statusStyles: Record<TelevisionStatus, string> = {
   playing: "bg-[#246bfd]",
@@ -81,6 +94,14 @@ type PendingMediaTransfer = {
 };
 
 const emptyTelevisions: Television[] = [];
+const TV_PAGE_SIZE = 4;
+
+function televisionPageItems(current: number, total: number): Array<number | "ellipsis"> {
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1);
+  if (current <= 4) return [1, 2, 3, 4, 5, "ellipsis", total];
+  if (current >= total - 3) return [1, "ellipsis", total - 4, total - 3, total - 2, total - 1, total];
+  return [1, "ellipsis", current - 1, current, current + 1, "ellipsis", total];
+}
 
 function formatPlaybackTime(seconds = 0) {
   const safeSeconds = Math.max(0, Math.floor(seconds));
@@ -112,11 +133,13 @@ function playbackActivityColor(device: Television) {
 }
 
 export function ControlTvDashboard() {
-  const { data = emptyTelevisions, isLoading, isFetching, error, refetch } = useGetTelevisionsQuery(undefined, { refetchOnFocus: true, refetchOnReconnect: true });
-  const { socketDevices, onlineTvIds, lowSignalTvIds, hasStatusSnapshot, mediaReadyByTvId, mediaErrorByTvId, latestMediaError, dismissMediaError, mediaControlByTvId, sendAdminCommand } = useConnectedTvs();
+  const { user, can, logout } = useAuth();
+  const { data = emptyTelevisions, isLoading, isFetching, error, refetch } = useGetTelevisionsQuery(undefined, { skip: !can("televisions.view"), refetchOnFocus: true, refetchOnReconnect: true });
+  const { socketDevices, onlineTvIds, lowSignalTvIds, hasStatusSnapshot, mediaReadyByTvId, mediaErrorByTvId, latestMediaError, dismissMediaError, mediaControlByTvId, sendAdminCommand, sendPlayback, isSocketConnected, requests, pendingTvIds, connectionError, commandError } = useConnectedTvs();
   // Estado optimista local; las confirmaciones posteriores de la TV tienen prioridad.
   const [overrides, setOverrides] = useState<Record<string, Partial<Television>>>({});
   const sourceDevices = error ? emptyTelevisions : data;
+  const [broadcastSource, setBroadcastSource] = useState<PlaybackSelection | null>(null);
   const devices = useMemo(() => {
     const onlineIds = new Set(onlineTvIds);
     const lowSignalIds = new Set(lowSignalTvIds);
@@ -133,27 +156,44 @@ export function ControlTvDashboard() {
         ...(mediaControl?.playbackState ? { playbackState: mediaControl.playbackState } : {}),
         ...(mediaControl?.volume !== undefined ? { volume: mediaControl.volume } : {}),
         ...(mediaControl?.repeat !== undefined ? { repeat: mediaControl.repeat } : {}),
+        ...(mediaControl?.shuffle !== undefined ? { shuffle: mediaControl.shuffle } : {}),
+        ...(mediaControl?.contentId !== undefined ? { currentContentId: mediaControl.contentId, playlistId: undefined, currentContentUrl: `/api/contenidos/${encodeURIComponent(mediaControl.contentId)}/archivo` } : {}),
+        ...(mediaControl?.contentType !== undefined ? { contentType: mediaControl.contentType } : {}),
+        ...(mediaControl?.playlistId !== undefined ? { playlistId: mediaControl.playlistId, currentContentId: undefined, contentType: undefined, currentContentUrl: undefined } : {}),
+        ...(broadcastSource && (mediaControl?.playlistId === broadcastSource.id || mediaControl?.contentId === broadcastSource.id) ? { currentContent: broadcastSource.name } : {}),
+        ...(mediaControl?.currentMedia ? { currentContent: mediaControl.currentMedia.name, currentContentId: mediaControl.currentMedia.id, contentType: mediaControl.currentMedia.kind, currentContentUrl: `/api/contenidos/${encodeURIComponent(mediaControl.currentMedia.id)}/archivo` } : {}),
+        ...(mediaControl?.playlistId ? { currentContent: mediaControl.playlistName || (broadcastSource?.id === mediaControl.playlistId ? broadcastSource.name : "Playlist") } : {}),
       };
 
-      if (!isOnline) return { ...synchronizedDevice, status: "offline" as const, connectionStatus: "offline" as const };
+      if (!isOnline) return { ...synchronizedDevice, status: "offline" as const, playbackState: "stopped" as const, connectionStatus: "offline" as const };
       return {
         ...synchronizedDevice,
         status: synchronizedDevice.status === "offline" ? "available" as const : synchronizedDevice.status,
         connectionStatus: isLowSignal ? "low-signal" as const : "online" as const,
       };
     });
-  }, [sourceDevices, overrides, onlineTvIds, lowSignalTvIds, hasStatusSnapshot, mediaControlByTvId]);
+  }, [sourceDevices, overrides, onlineTvIds, lowSignalTvIds, hasStatusSnapshot, mediaControlByTvId, broadcastSource]);
   const [registeredPendingIds, setRegisteredPendingIds] = useState<string[]>([]);
   const pendingDevices = (socketDevices ?? emptyTelevisions).filter((device) => !registeredPendingIds.includes(device.id));
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [deviceToRegister, setDeviceToRegister] = useState<Television | null>(null);
   const [deviceToEdit, setDeviceToEdit] = useState<Television | null>(null);
   const [deviceToDelete, setDeviceToDelete] = useState<Television | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [commandFeedback, setCommandFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const handlePlayback = (action: PlaybackAction, enabled?: boolean, source = broadcastSource) => {
+    if (!can("televisions.control")) return false;
+    const targets = selectedPlaybackTargets(devices, selectedIds);
+    const result = sendPlayback(action, targets, source, enabled);
+    setCommandFeedback(result.error ? { error: true, text: result.error } : null);
+    return !result.error;
+  };
   const [pendingMediaByDeviceId, setPendingMediaByDeviceId] = useState<Record<string, PendingMediaTransfer>>({});
   const [completedTvCodes, setCompletedTvCodes] = useState<string[]>([]);
   const [query, setQuery] = useState("");
+  const [tvPage, setTvPage] = useState(1);
   const selected = devices.find((device) => device.id === selectedId) ?? devices[0];
   const visibleDevices = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("es");
@@ -161,6 +201,9 @@ export function ControlTvDashboard() {
       ? devices.filter((device) => `${device.room} ${device.name} ${device.tvCode ?? ""} ${device.location ?? ""}`.toLocaleLowerCase("es").includes(normalized))
       : devices;
   }, [devices, query]);
+  const tvTotalPages = Math.max(1, Math.ceil(visibleDevices.length / TV_PAGE_SIZE));
+  const currentTvPage = Math.min(tvPage, tvTotalPages);
+  const pagedDevices = visibleDevices.slice((currentTvPage - 1) * TV_PAGE_SIZE, currentTvPage * TV_PAGE_SIZE);
 
   useEffect(() => {
     const completed = Object.entries(pendingMediaByDeviceId).filter(([, pending]) => (mediaReadyByTvId[pending.tvId]?.sequence ?? 0) > pending.readyBaseline);
@@ -195,49 +238,36 @@ export function ControlTvDashboard() {
     return () => window.clearTimeout(timer);
   }, [completedTvCodes]);
 
-  const updateSelected = (changes: Partial<Television>) => {
-    if (!selected) return;
-    setOverrides((current) => ({ ...current, [selected.id]: { ...current[selected.id], ...changes } }));
-  };
-
-  const updateDevice = (deviceId: string, changes: Partial<Television>) => {
-    setOverrides((current) => ({ ...current, [deviceId]: { ...current[deviceId], ...changes } }));
-  };
-
   const assignMedia = (deviceId: string, file: File, kind: "IMAGE" | "VIDEO", contentId?: string) => {
     setOverrides((current) => ({ ...current, [deviceId]: { ...current[deviceId], currentContent: file.name, contentType: kind, ...(contentId ? { currentContentId: contentId } : {}) } }));
     setSelectedId(deviceId);
   };
 
   const online = devices.filter((device) => device.connectionStatus !== "offline").length;
-  const lowSignal = devices.filter((device) => device.connectionStatus === "low-signal").length;
   const offline = devices.filter((device) => device.connectionStatus === "offline").length;
-
   return (
-    <main className="min-h-screen bg-[#f2f2f2] text-[#202226]">
-      <header id="inicio" className="flex min-h-20 items-center justify-between gap-6 bg-[linear-gradient(110deg,#0d7558_0%,#356f3d_46%,#e5393f_100%)] px-5 py-4 text-white shadow-[0_8px_24px_rgba(45,72,61,0.22)] md:px-9">
-        <div className="flex items-center gap-4.5">
-          <span className="grid size-14 place-items-center">
-            <Tv2 aria-hidden="true" size={50} strokeWidth={1.8} />
-          </span>
-          <span>
-            <strong className="block text-[22px] leading-tight tracking-[-0.6px] md:text-[28px]">Control TV</strong>
-            <small className="mt-1 block text-[13px] text-[#d6ece6] md:text-base"><span className="font-bold text-red-800">Hospital</span> Daniel Bracamente</small>
-          </span>
-        </div>
-        <nav className="hidden items-center gap-1 xl:flex" aria-label="Navegación principal">
-          <a href="#inicio" className="flex items-center gap-2 rounded-xl bg-white/90 px-4 py-2.5 font-semibold text-[#202226]"><Home size={17} /> Inicio</a>
-          <a href="#televisores" className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-white/90 transition hover:bg-white/15"><Monitor size={17} /> Televisores</a>
-          <a href="#transmision-general" className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-white/90 transition hover:bg-white/15"><Radio size={17} /> Contenido</a>
-          <a href="#resumen" className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-white/90 transition hover:bg-white/15"><BarChart3 size={17} /> Reportes</a>
+    <main className="min-h-screen bg-[#f4f7f5] text-[#17231e] lg:flex">
+      <aside className={`relative z-50 hidden min-h-screen shrink-0 flex-col overflow-hidden brand-green-surface py-5 text-white transition-[width,padding] duration-300 lg:sticky lg:top-0 lg:flex lg:h-screen ${sidebarExpanded ? "w-64 px-4" : "w-22 px-3"}`}>
+        <SidebarBrand expanded={sidebarExpanded} onToggle={() => setSidebarExpanded((expanded) => !expanded)} />
+        <nav className="mt-8 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" aria-label="Navegación principal">
+          <SidebarLink expanded={sidebarExpanded} href="/" label="Inicio" icon={<Home size={20} />} />
+          {can("users.manage") && <SidebarLink expanded={sidebarExpanded} href="/usuarios" label="Usuarios" icon={<Users size={20} />} />}
+          {can("roles.manage") && <SidebarLink expanded={sidebarExpanded} href="/roles" label="Roles y permisos" icon={<Key size={20} />}/>}
+          {can("televisions.view") && <SidebarLink expanded={sidebarExpanded} href="/televisores" label="Televisores" icon={<Monitor size={20} />} />}
+          {can("content.view") && <SidebarLink expanded={sidebarExpanded} href="/contenido" label="Contenido" icon={<ImageIcon size={20} />} />}
+          {can("playlists.view") && <SidebarLink expanded={sidebarExpanded} href="/listas" label="Playlists" icon={<ListVideo size={20} />} />}
         </nav>
-        <div className="relative flex items-center gap-2.5">
-          {offline > 0 && <span className="hidden rounded-xl border border-white/35 bg-[#d9363e]/80 px-4 py-2 text-sm font-semibold shadow-sm lg:block">{offline} {offline === 1 ? "televisor" : "televisores"} sin conexión</span>}
-          <button type="button" onClick={() => setNotificationsOpen((open) => !open)} className="relative grid size-11 cursor-pointer place-items-center rounded-xl border border-white/25 bg-black/15 text-white shadow-[0_6px_16px_rgba(0,0,0,0.14)] transition hover:bg-black/25" aria-expanded={notificationsOpen} aria-label={`${pendingDevices.length} dispositivos pendientes de registro`}>
-            <Bell size={19} />{pendingDevices.length > 0 && <i className="absolute -right-1.5 -top-1.5 grid size-5 place-items-center rounded-full bg-[#f5b942] text-[11px] font-bold not-italic text-[#4b3410] ring-2 ring-white">{pendingDevices.length}</i>}
-          </button>
-          <span className="hidden size-11 place-items-center rounded-full bg-white/90 text-sm font-bold text-[#27634f] sm:grid">CM</span>
-          {notificationsOpen &&
+        <nav className="shrink-0 border-t border-white/15 pt-4">
+          <button type="button" onClick={() => void logout()} title={sidebarExpanded ? undefined : "Cerrar sesión"} className={`flex h-11 w-full items-center rounded-xl text-white/85 transition hover:bg-white/10 ${sidebarExpanded ? "gap-3 px-4" : "justify-center px-0"}`}><LogOut size={19} />{sidebarExpanded && <span>Cerrar sesión</span>}</button>
+          {sidebarExpanded && <div className="mt-3 truncate px-2 text-xs text-white/60">{user?.name ?? "Cargando usuario…"}</div>}
+        </nav>
+      </aside>
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
+      <AppHeader notificationContent={(appBarScrolled) => <>
+          {can("televisions.register") && <button type="button" onClick={() => setNotificationsOpen((open) => !open)} className={`relative grid size-11 cursor-pointer place-items-center rounded-full border-0 bg-transparent transition ${appBarScrolled ? "text-white hover:bg-white/12" : "text-[#173d31] hover:bg-[#edf4f1]"}`} aria-expanded={notificationsOpen} aria-label={`${pendingDevices.length} dispositivos pendientes de registro`}>
+            <Bell size={21} />{pendingDevices.length > 0 && <i className="absolute right-1 top-1 size-2.5 rounded-full bg-[#f2b329] ring-2 ring-white" />}
+          </button>}
+          {can("televisions.register") && notificationsOpen &&
             <div className="absolute right-0 top-15 z-30 w-[min(360px,calc(100vw-32px))] overflow-hidden rounded-2xl border border-[#e5e7e6] bg-white text-[#202226] shadow-[0_20px_50px_rgba(0,0,0,0.22)]">
               <div className="border-b border-[#e8e9e9] px-4 py-3">
                 <strong className="block">{pendingDevices.length} Dispositivos detectados</strong>
@@ -260,22 +290,26 @@ export function ControlTvDashboard() {
                   </button>)}{pendingDevices.length === 0 && <p className="px-3 py-6 text-center text-sm text-[#68696d]">No hay dispositivos pendientes.</p>}
               </div>
             </div>}
-        </div>
-      </header>
+        </>} />
 
-      <section id="resumen" className="grid grid-cols-1 gap-3.5 px-5 py-5 sm:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_250px] md:px-9 md:py-6" aria-label="Resumen de dispositivos">
-        <Metric label="Televisores" value={devices.length} detail="Dispositivos registrados" iconColor="bg-[#438b7a]" borderColor="border-l-[#438b7a]" />
-        <Metric label="En línea" value={online} detail="Listos para transmitir" iconColor="bg-[#20ad78]" borderColor="border-l-[#20ad78]" />
-        <Metric label="Sin Conexión" value={offline} detail="Dispositivos sin conexión" iconColor="bg-[#d74747]" borderColor="border-l-[#d74747]" />
-        <Metric label="Con problemas" value={lowSignal} detail="Requieren revisión" iconColor="bg-[#e1a12d]" borderColor="border-l-[#e1a12d]" />
-        <CurrentTime />
+      <section id="resumen" className="flex flex-col gap-5 px-5 py-6 md:px-9 xl:flex-row xl:items-center xl:justify-between" aria-label="Resumen de dispositivos">
+        <span><h1 className="text-3xl font-extrabold tracking-[-1px] text-[#10241d] md:text-4xl">Todo listo para transmitir</h1><p className="mt-1 text-[#647a72]">Administra los videos e imágenes de tus televisores.</p></span>
+        <div className="flex flex-wrap gap-2.5">
+          <MiniMetric label="Televisores" value={devices.length} tone="navy" icon={<Monitor size={18} />} />
+          <MiniMetric label="En línea" value={online} tone="green" icon={<i className="size-2.5 rounded-full bg-[#13b878]" />} />
+          <MiniMetric label="Sin conexión" value={offline} tone="red" icon={<i className="size-2.5 rounded-full bg-[#ef334f]" />} />
+        </div>
       </section>
 
       <div id="televisores" className="grid items-start gap-5 px-5 pb-24 xl:grid-cols-[minmax(0,1fr)_380px] xl:px-9">
         <div className="min-w-0 space-y-5">
-          <GlobalBroadcast
+          {can("televisions.control") && <GlobalBroadcast
             devices={devices}
             selectedIds={selectedIds}
+            onSelectedIdsChange={setSelectedIds}
+            selectedSource={broadcastSource}
+            socketConnected={isSocketConnected}
+            onPlayback={handlePlayback}
             mediaReadyByTvId={mediaReadyByTvId}
             mediaErrorByTvId={mediaErrorByTvId}
             onMediaAssigned={(targetDevices, file, kind, readyBaselines, errorBaselines) => {
@@ -288,7 +322,10 @@ export function ControlTvDashboard() {
                 return next;
               });
             }}
-          />
+          />}
+          {commandFeedback && <p role="alert" className="rounded-xl bg-[#fff0f0] px-4 py-3 text-sm text-[#b4232c]">{commandFeedback.text}</p>}
+          {(connectionError || commandError) && <p role="alert" className="rounded-xl bg-[#fff0f0] px-4 py-3 text-sm text-[#b4232c]">{connectionError ?? commandError}</p>}
+          <PlaybackRequestsPanel requests={requests} />
           <section className="min-w-0 rounded-2xl border border-[#e2e6e4] bg-white p-4 shadow-[0_10px_30px_rgba(25,45,38,0.06)] md:p-5">
             <div className="mb-6 flex flex-col gap-4 border-b border-[#d8dddb] pb-5 md:flex-row md:items-center md:justify-between">
               <span>
@@ -297,27 +334,37 @@ export function ControlTvDashboard() {
               </span>
               <label className="flex h-14.5 w-full items-center gap-3 rounded-md border border-[#d6d6d6] bg-white px-4 md:w-72">
                 <span className="sr-only">Buscar sala</span>
-                <input className="min-w-0 flex-1 border-0 bg-transparent text-[#444] outline-none placeholder:text-[#666]" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar sala..." />
+                <input className="min-w-0 flex-1 border-0 bg-transparent text-[#444] outline-none placeholder:text-[#666]" value={query} onChange={(event) => { setQuery(event.target.value); setTvPage(1); }} placeholder="Buscar sala..." />
                 <Search aria-hidden="true" size={18} strokeWidth={1.7} />
               </label>
             </div>
             <div className="grid max-h-155 grid-cols-1 gap-5 overflow-y-auto pb-4 md:grid-cols-2 2xl:grid-cols-3">
-              {visibleDevices.map((device) => (
-                <DeviceCard key={device.id} device={device} pendingMedia={pendingMediaByDeviceId[device.id]} mediaReady={mediaReadyByTvId[device.tvCode ?? device.id]} mediaError={mediaErrorByTvId[device.tvCode ?? device.id]} selected={device.id === selected?.id} checked={selectedIds.includes(device.id)} onToggleChecked={() => setSelectedIds((current) => current.includes(device.id) ? current.filter((id) => id !== device.id) : [...current, device.id])} onCommand={sendAdminCommand} onChange={(changes) => updateDevice(device.id, changes)} onEdit={() => setDeviceToEdit(device)} onDelete={() => setDeviceToDelete(device)} onSelect={() => setSelectedId(device.id)} onMediaDrop={(file, kind, contentId) => assignMedia(device.id, file, kind, contentId)} />
+              {pagedDevices.map((device) => (
+                <DeviceCard key={device.id} device={device} pendingMedia={pendingMediaByDeviceId[device.id]} mediaReady={mediaReadyByTvId[device.tvCode ?? device.id]} mediaError={mediaErrorByTvId[device.tvCode ?? device.id]} commandPending={pendingTvIds.includes(device.tvCode ?? device.id) && Object.values(requests).some(request => request.command.evento !== "media.volume" && request.targets[device.tvCode ?? device.id]?.status === "pending")} volumePending={Object.values(requests).some(request => request.command.evento === "media.volume" && request.targets[device.tvCode ?? device.id]?.status === "pending")} selected={device.id === selected?.id} canControl={can("televisions.control")} canEdit={can("televisions.edit")} canDelete={can("televisions.delete")} canTransfer={can("content.broadcast")} onCommand={sendAdminCommand} onEdit={() => setDeviceToEdit(device)} onDelete={() => setDeviceToDelete(device)} onSelect={() => setSelectedId(device.id)} onMediaDrop={(file, kind, contentId) => assignMedia(device.id, file, kind, contentId)} />
               ))}
               {isLoading && <p role="status">Cargando televisores registrados…</p>}
               {error && <div role="alert"><p>No se pudieron cargar los televisores registrados.</p><button className="mt-3 rounded bg-[#236b5b] px-4 py-2 text-white" disabled={isFetching} onClick={() => refetch()}>Reintentar</button></div>}
               {!isLoading && !error && visibleDevices.length === 0 && <p className="text-[#666970]">{devices.length === 0 ? "No hay televisores registrados." : "No encontramos salas con ese nombre."}</p>}
             </div>
+            {!isLoading && !error && visibleDevices.length > 0 && <footer className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#e6ebe8] pt-4">
+              <p className="text-sm text-[#66736d]">Mostrando <strong>{(currentTvPage - 1) * TV_PAGE_SIZE + 1}</strong>–<strong>{Math.min(currentTvPage * TV_PAGE_SIZE, visibleDevices.length)}</strong> de <strong>{visibleDevices.length}</strong> televisores</p>
+              <nav aria-label="Paginación de televisores por sala" className="inline-flex max-w-full flex-wrap items-center overflow-hidden rounded-xl border border-[#d8dfdc]">
+                <button type="button" disabled={currentTvPage <= 1 || isFetching} onClick={() => setTvPage(currentTvPage - 1)} aria-label="Página anterior de televisores" className="grid size-10 place-items-center text-[#52625a] hover:bg-[#f0f8f4] disabled:cursor-not-allowed disabled:opacity-40"><ChevronLeft size={18} /></button>
+                {televisionPageItems(currentTvPage, tvTotalPages).map((item, index) => item === "ellipsis" ? <span key={"ellipsis-" + index} className="grid size-10 place-items-center text-[#718079]">…</span> : <button type="button" key={item} disabled={isFetching} onClick={() => setTvPage(item)} aria-label={"Ir a la página " + item + " de televisores"} aria-current={currentTvPage === item ? "page" : undefined} className={"grid size-10 place-items-center border-l border-[#d8dfdc] text-sm font-semibold disabled:opacity-50 " + (currentTvPage === item ? "bg-[#08783f] text-white" : "text-[#52625a] hover:bg-[#f0f8f4]")}>{item}</button>)}
+                <button type="button" disabled={currentTvPage >= tvTotalPages || isFetching} onClick={() => setTvPage(currentTvPage + 1)} aria-label="Página siguiente de televisores" className="grid size-10 place-items-center border-l border-[#d8dfdc] text-[#52625a] hover:bg-[#f0f8f4] disabled:cursor-not-allowed disabled:opacity-40"><ChevronRight size={18} /></button>
+              </nav>
+            </footer>}
           </section>
         </div>
-        {selected ? <div><ControlPanel key={selected.id} device={selected} isMediaPending={Boolean(pendingMediaByDeviceId[selected.id])} mediaReady={mediaReadyByTvId[selected.tvCode ?? selected.id]} mediaError={mediaErrorByTvId[selected.tvCode ?? selected.id]} onCommand={sendAdminCommand} onChange={updateSelected} /></div> : <aside className="rounded-2xl bg-white p-7 text-[#666970]">Selecciona un televisor para ver su panel de control.</aside>}
+        <DashboardLibraryPanel selectedTvCount={selectedPlaybackTargets(devices, selectedIds).length} socketConnected={isSocketConnected} onSelectionChange={setBroadcastSource} onSend={(source) => handlePlayback("prepare", undefined, source)} />
       </div>
       {deviceToRegister && <RegisterDeviceDialog device={deviceToRegister} onCancel={() => setDeviceToRegister(null)} onRegistered={() => { setRegisteredPendingIds((current) => [...current, deviceToRegister.id]); setDeviceToRegister(null); }} />}
       {deviceToEdit && <EditDeviceDialog device={deviceToEdit} onClose={() => setDeviceToEdit(null)} />}
       {deviceToDelete && <DeleteDeviceDialog device={deviceToDelete} onClose={() => setDeviceToDelete(null)} onDeleted={() => { setDeviceToDelete(null); setSelectedIds((current) => current.filter((id) => id !== deviceToDelete.id)); if (selectedId === deviceToDelete.id) setSelectedId(null); }} />}
       {latestMediaError && <MediaErrorDialog error={latestMediaError} onClose={dismissMediaError} />}
       {completedTvCodes[0] && <div className="pointer-events-none fixed inset-x-4 bottom-6 z-80 flex justify-center"><div role="status" aria-live="polite" className="tv-snackbar flex w-full max-w-md items-center gap-3 rounded-xl bg-[#173f35] px-4 py-3 text-white shadow-[0_14px_40px_rgba(10,45,33,0.32)]"><span className="grid size-9 shrink-0 place-items-center rounded-full bg-[#20ad78] text-white"><Check size={19} /></span><span className="min-w-0"><strong className="block text-sm">TV lista para reproducir</strong><small className="block truncate text-white/80">{completedTvCodes[0]} terminó de descargar el contenido.</small></span></div></div>}
+      <AppFooter />
+      </div>
     </main>
   );
 }
@@ -519,7 +566,7 @@ function FormField({ label, placeholder, value, onChange, maxLength }: { label: 
   return <label className="block"><span className="mb-1.5 block text-sm font-semibold">{label}</span><input required value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} maxLength={maxLength} className="h-12 w-full rounded-xl border border-[#d8dcda] bg-white px-4 outline-none transition focus:border-[#146be8] focus:ring-3 focus:ring-[#146be8]/12" /></label>;
 }
 
-function CurrentTime() {
+export function CurrentTime() {
   const [now, setNow] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -538,16 +585,22 @@ function CurrentTime() {
   );
 }
 
-function GlobalBroadcast({ devices, selectedIds, mediaReadyByTvId, mediaErrorByTvId, onMediaAssigned }: { devices: Television[]; selectedIds: string[]; mediaReadyByTvId: Record<string, MediaReadyState>; mediaErrorByTvId: Record<string, MediaErrorState>; onMediaAssigned: (devices: Television[], file: File, kind: "IMAGE" | "VIDEO", readyBaselines: Record<string, number>, errorBaselines: Record<string, number>) => void }) {
+function GlobalBroadcast({ devices, selectedIds, onSelectedIdsChange, selectedSource, socketConnected, onPlayback, mediaReadyByTvId, mediaErrorByTvId, onMediaAssigned }: { devices: Television[]; selectedIds: string[]; onSelectedIdsChange: (ids: string[]) => void; selectedSource: PlaybackSelection | null; socketConnected: boolean; onPlayback: (action: PlaybackAction, enabled?: boolean) => boolean; mediaReadyByTvId: Record<string, MediaReadyState>; mediaErrorByTvId: Record<string, MediaErrorState>; onMediaAssigned: (devices: Television[], file: File, kind: "IMAGE" | "VIDEO", readyBaselines: Record<string, number>, errorBaselines: Record<string, number>) => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const [confirmation, setConfirmation] = useState<{ target: "all" | "selected"; devices: Television[] } | null>(null);
   const [completed, setCompleted] = useState(0);
   const [activeTargetCount, setActiveTargetCount] = useState(0);
+  const [tvSelectorOpen, setTvSelectorOpen] = useState(false);
+
   const { transferToMany, resetTransfer, progress, isUploading, error } = useMediaTransfer();
   const onlineDevices = devices.filter((device) => device.connectionStatus !== "offline");
   const selectedDevices = onlineDevices.filter((device) => selectedIds.includes(device.id));
+  const allSelected = onlineDevices.length > 0 && selectedDevices.length === onlineDevices.length;
+  const partiallySelected = selectedDevices.length > 0 && !allSelected;
+  const groupRepeat = selectedDevices.length > 0 && selectedDevices.every((device) => device.repeat);
+  const groupShuffle = selectedDevices.length > 0 && selectedDevices.every((device) => device.shuffle);
   const extension = file?.name.split(".").pop()?.toUpperCase() ?? "";
   const isVideo = Boolean(file && (file.type.startsWith("video/") || ["MP4", "MOV", "WEBM"].includes(extension)));
 
@@ -588,13 +641,54 @@ function GlobalBroadcast({ devices, selectedIds, mediaReadyByTvId, mediaErrorByT
     setConfirmation({ target, devices: [...(target === "all" ? onlineDevices : selectedDevices)] });
   };
 
+  const toggleTv = (device: Television) => {
+    if (device.connectionStatus === "offline") return;
+    onSelectedIdsChange(selectedIds.includes(device.id) ? selectedIds.filter((id) => id !== device.id) : [...selectedIds, device.id]);
+  };
+
+
   return (
-    <section id="transmision-general" className="rounded-2xl border border-l-4 border-l-blue-700 border-[#dfe5e2] bg-white p-5 shadow-[0_12px_35px_rgba(23,48,39,0.07)] md:p-6">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <span><h2 className="flex items-center gap-2 text-2xl font-semibold"><Radio className="text-[#179a62]" /> Transmisión general</h2><p className="mt-1 text-[#6b7073]">Envía la misma imagen o video a una o varias pantallas.</p></span>
-        <span className="rounded-full bg-[#e9f7f0] px-3 py-1.5 text-sm font-semibold text-[#16734f]">{onlineDevices.length} TV en línea</span>
+    <section id="transmision-general" className="@container rounded-2xl border border-[#dfe5e2] bg-white p-5 shadow-[0_12px_35px_rgba(23,48,39,0.07)] md:p-6">
+      <div className="mb-5 grid grid-cols-1 items-center gap-3 @min-[44rem]:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="flex flex-wrap items-center gap-3"><h2 className="flex items-center gap-2 text-2xl font-semibold"><Radio className="shrink-0 text-[#179a62]" /> Transmisión general</h2></div>
+        <div className="relative flex flex-wrap items-center gap-2 @min-[44rem]:justify-end">
+          <span className="rounded-full bg-[#e9f7f0] px-3 py-1.5 text-sm font-semibold text-[#16734f]">{onlineDevices.length} TV en línea</span>
+          <button type="button" aria-haspopup="listbox" aria-expanded={tvSelectorOpen} onClick={() => setTvSelectorOpen((open) => !open)} className="flex h-10 items-center gap-2 rounded-xl border border-[#cfdcd6] bg-white px-3.5 text-sm font-semibold text-[#24463a] shadow-sm transition hover:border-[#8db9a6] hover:bg-[#f7fbf9]">
+            <Monitor size={17} className="text-[#08783f]" />
+            {selectedDevices.length} {selectedDevices.length === 1 ? "pantalla seleccionada" : "pantallas seleccionadas"}
+            <ChevronDown size={16} className={`transition-transform ${tvSelectorOpen ? "rotate-180" : ""}`} />
+          </button>
+          {tvSelectorOpen && <div className="absolute left-0 top-full z-40 mt-2 w-[min(360px,calc(100vw-2.5rem))] @min-[44rem]:right-0 @min-[44rem]:left-auto overflow-hidden rounded-2xl border border-[#d9e3de] bg-white shadow-[0_18px_50px_rgba(19,54,42,.18)]">
+            <div className="flex items-center justify-between border-b border-[#e5ebe8] px-4 py-3"><span><strong className="block text-sm">Seleccionar televisores</strong><small className="text-[#718079]">Solo se enviará a equipos en línea.</small></span></div>
+            <ul role="listbox" aria-multiselectable="true" aria-label="Televisores disponibles" className="max-h-64 overflow-y-auto p-2">
+              <li className="mb-1 border-b border-[#e5ebe8] pb-1"><button type="button" role="option" aria-selected={allSelected} disabled={onlineDevices.length === 0 || !socketConnected} onClick={() => onSelectedIdsChange(allSelected ? [] : onlineDevices.map((device) => device.id))} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left font-semibold text-[#24463a] transition hover:bg-[#f1f7f4] disabled:cursor-not-allowed disabled:opacity-50"><span className={`grid size-5 shrink-0 place-items-center rounded-md border ${allSelected || partiallySelected ? "border-[#08783f] bg-[#08783f] text-white" : "border-[#acbbb4] bg-white"}`}>{allSelected ? <Check size={14} /> : partiallySelected ? <span className="h-0.5 w-2.5 bg-white" /> : null}</span><span>Seleccionar todos</span></button></li>
+              {devices.map((device) => { const offline = device.connectionStatus === "offline"; const checked = selectedIds.includes(device.id) && !offline; return <li key={device.id}><button type="button" role="option" aria-selected={checked} disabled={offline} onClick={() => toggleTv(device)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-[#f1f7f4] disabled:cursor-not-allowed disabled:opacity-50"><span className={`grid size-5 shrink-0 place-items-center rounded-md border ${checked ? "border-[#08783f] bg-[#08783f] text-white" : "border-[#acbbb4] bg-white"}`}>{checked && <Check size={14} />}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{device.name}</strong><small className="block truncate text-[#718079]">{device.room}{device.location ? ` · ${device.location}` : ""}</small></span><span className={`size-2.5 shrink-0 rounded-full ${offline ? "bg-[#e1394d]" : "bg-[#18ad76]"}`} /></button></li>; })}
+              {devices.length === 0 && <li className="px-3 py-8 text-center text-sm text-[#718079]">No hay televisores registrados.</li>}
+            </ul>
+            <div className="flex items-center justify-between border-t border-[#e5ebe8] bg-[#fafcfb] px-4 py-3"><button type="button" onClick={() => onSelectedIdsChange([])} className="text-xs font-semibold text-[#68766f] hover:text-[#b3353e]">Limpiar selección</button><button type="button" onClick={() => setTvSelectorOpen(false)} className="rounded-lg bg-[#08783f] px-4 py-2 text-xs font-semibold text-white">Listo</button></div>
+          </div>}
+        </div>
+        <p className="text-[#6b7073] @min-[44rem]:col-span-2">Controla al mismo tiempo los televisores que selecciones.</p>
       </div>
 
+      {selectedDevices.length > 0 ? <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+        {selectedDevices.map((device) => <article key={device.id} className="group relative overflow-hidden rounded-2xl border border-[#dce6e1] bg-[#fbfdfc] p-3.5 transition hover:border-[#8fc3ab] hover:shadow-[0_10px_24px_rgba(20,74,53,.08)]">
+          <button type="button" onClick={() => toggleTv(device)} aria-label={`Quitar ${device.name} de la selección`} className="absolute right-2.5 top-2.5 grid size-7 place-items-center rounded-full text-[#75837d] transition hover:bg-[#ffe9ea] hover:text-[#c43640]"><X size={15} /></button>
+          <div className="flex items-center gap-3 pr-7"><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#e4f3ec] text-[#08783f]"><Monitor size={22} /></span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{device.name}</strong><small className="block truncate text-[#718079]">{device.room}{device.location ? ` · ${device.location}` : ""}</small></span></div>
+          <div className="mt-3 flex items-center gap-3 rounded-xl bg-[#f0f5f2] p-2.5"><span className={`grid size-10 shrink-0 place-items-center rounded-lg ${device.contentType === "IMAGE" ? "bg-[#dcefe7] text-[#08783f]" : "bg-[#123e32] text-white"}`}>{device.contentType === "IMAGE" ? <ImageIcon size={20} /> : <MonitorPlay size={20} />}</span><span className="min-w-0 flex-1"><small className="block text-[11px] uppercase tracking-wide text-[#7c8983]">Contenido actual</small><strong className="block truncate text-xs">{device.currentContent || "Sin reproducción"}</strong></span></div>
+        </article>)}
+      </div> : <div className="grid min-h-42 place-items-center px-5 text-center"><span><span className="mx-auto grid size-12 place-items-center rounded-2xl bg-[#e8f3ee] text-[#08783f]"><Monitor size={24} /></span><strong className="mt-3 block">Selecciona los televisores</strong><small className="mt-1 block text-[#718079]">Usa el selector superior para agregar una, dos o más pantallas.</small></span></div>}
+
+      {selectedSource && <p className="mt-4 text-sm text-[#52665c]">Contenido: <strong>{selectedSource.name}</strong></p>}
+      <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-[#dfe7e3] bg-[#f8fbf9] p-3 sm:flex-row sm:items-center">
+        <button type="button" disabled={selectedDevices.length === 0 || !socketConnected} onClick={() => onPlayback("resume")} title="Reproducir en todos los televisores seleccionados" className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-[#08783f] font-semibold text-white transition hover:bg-[#066734] disabled:cursor-not-allowed disabled:bg-[#a7c4b7]"><Play size={18} fill="currentColor" />Reproducir</button>
+        <button type="button" disabled={selectedDevices.length === 0 || !socketConnected} onClick={() => onPlayback("stop")} className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-[#df7780] bg-white font-semibold text-[#c43d47] transition hover:bg-[#fff0f1] disabled:cursor-not-allowed disabled:opacity-45"><CircleStop size={18} fill="currentColor" />Detener</button>
+        <span className="hidden h-8 w-px bg-[#d5dfda] sm:block" />
+        <button type="button" aria-pressed={groupShuffle} disabled={selectedDevices.length === 0 || !socketConnected} onClick={() => onPlayback("shuffle", !groupShuffle)} className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 ${groupShuffle ? "border-[#08783f] bg-[#e5f3ec] text-[#075f45]" : "border-transparent text-[#405149] hover:bg-[#edf4f1]"}`}><Shuffle size={18} />Aleatorio<span className={`relative ml-1 h-6 w-11 rounded-full transition ${groupShuffle ? "bg-[#0ba66f]" : "bg-[#c7d1cc]"}`}><i className={`absolute top-1 size-4 rounded-full bg-white shadow transition-all ${groupShuffle ? "left-6" : "left-1"}`} /></span></button>
+        <button type="button" aria-pressed={groupRepeat} disabled={selectedDevices.length === 0 || !socketConnected} onClick={() => onPlayback("repeat", !groupRepeat)} className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 ${groupRepeat ? "border-[#08783f] bg-[#e5f3ec] text-[#075f45]" : "border-transparent text-[#405149] hover:bg-[#edf4f1]"}`}><Repeat2 size={18} />Repetir<span className={`relative ml-1 h-6 w-11 rounded-full transition ${groupRepeat ? "bg-[#0ba66f]" : "bg-[#c7d1cc]"}`}><i className={`absolute top-1 size-4 rounded-full bg-white shadow transition-all ${groupRepeat ? "left-6" : "left-1"}`} /></span></button>
+      </div>
+
+      <div className="hidden" aria-hidden="true">
       <div className="grid gap-5 xl:grid-cols-[1fr_1fr_300px]">
         <div>
           <label className="flex min-h-38 cursor-pointer items-center justify-center gap-3 rounded-xl border-2 border-dashed border-[#cdd8d3] bg-[#fafcfb] px-5 text-center transition hover:border-[#179a62] hover:bg-[#f4faf7]">
@@ -659,11 +753,23 @@ function GlobalBroadcast({ devices, selectedIds, mediaReadyByTvId, mediaErrorByT
           <div className="flex justify-end gap-3 border-t border-[#e4e9e7] bg-[#fafcfb] px-6 py-4"><button type="button" onClick={() => setConfirmation(null)} className="h-11 cursor-pointer rounded-xl border border-[#d7dedb] bg-white px-5 font-semibold text-[#46504c] hover:bg-[#f1f4f3]">Cancelar</button><button type="button" disabled={confirmation.devices.length === 0} onClick={() => { const recipients = confirmation.devices; setConfirmation(null); void broadcast(recipients); }} style={{ color: "#ffffff" }} className="flex h-11 cursor-pointer items-center gap-2 rounded-xl border-0 bg-[#0877ed] px-5 font-semibold transition-colors hover:bg-[#0069db] disabled:cursor-not-allowed disabled:bg-[#9abce2]"><Send size={18} />Confirmar envío <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">{confirmation.devices.length}</span></button></div>
         </div>
       </div>}
+      </div>
     </section>
   );
 }
 
-function Metric({ label, value, detail, iconColor, borderColor }: { label: string; value: number; detail: string; iconColor: string; borderColor: string }) {
+function SidebarLink({ expanded, href, label, icon, active = false }: { expanded: boolean; href: string; label: string; icon: ReactNode; active?: boolean }) {
+  const pathname = usePathname();
+  const selected = active || pathname === href;
+  return <Link href={href} title={expanded ? undefined : label} aria-label={label} aria-current={selected ? "page" : undefined} className={`flex h-11 shrink-0 items-center rounded-xl transition ${expanded ? "gap-3 px-4" : "justify-center px-0"} ${selected ? "border-l-4 border-[var(--brand-gold)] bg-[var(--brand-green-deep)] font-semibold text-white" : "text-white/85 hover:bg-white/10"}`}><span className="shrink-0">{icon}</span>{expanded && <span className="whitespace-nowrap">{label}</span>}</Link>;
+}
+
+function MiniMetric({ label, value, tone, icon }: { label: string; value: number; tone: "navy" | "green" | "red"; icon: ReactNode }) {
+  const tones = { navy: "text-[#17304f]", green: "text-[#079563]", red: "text-[#df2941]" };
+  return <article className="flex min-h-15 min-w-25 items-center gap-2.5 rounded-xl border border-[#e4e9e6] bg-white px-4 shadow-[0_5px_16px_rgba(27,58,46,0.04)]"><span className={tones[tone]}>{icon}</span><span><strong className={`block text-xl leading-5 ${tones[tone]}`}>{value}</strong><small className="text-[11px] text-[#708078]">{label}</small></span></article>;
+}
+
+export function Metric({ label, value, detail, iconColor, borderColor }: { label: string; value: number; detail: string; iconColor: string; borderColor: string }) {
   return (
     <article className={`flex h-26.25 items-center gap-4 rounded-2xl border border-l-4 border-[#e0e5e3] bg-white px-5 py-4 shadow-[0_8px_24px_rgba(35,70,57,0.06)] md:h-28 md:px-6 ${borderColor}`}>
       <span className={`grid size-12 shrink-0 place-items-center rounded-xl text-white ${iconColor}`}><Monitor size={22} /></span>
@@ -672,11 +778,10 @@ function Metric({ label, value, detail, iconColor, borderColor }: { label: strin
   );
 }
 
-function DeviceCard({ device, pendingMedia, mediaReady, mediaError, selected, checked, onToggleChecked, onCommand, onChange, onEdit, onDelete, onSelect, onMediaDrop }: { device: Television; pendingMedia?: PendingMediaTransfer; mediaReady?: MediaReadyState; mediaError?: MediaErrorState; selected: boolean; checked: boolean; onToggleChecked: () => void; onCommand: (evento: AdminCommandEvent, datos: Record<string, unknown>) => boolean; onChange: (changes: Partial<Television>) => void; onEdit: () => void; onDelete: () => void; onSelect: () => void; onMediaDrop: (file: File, kind: "IMAGE" | "VIDEO", contentId?: string) => void }) {
+function DeviceCard({ device, volumePending, commandPending, pendingMedia, mediaReady, mediaError, selected, canControl, canEdit, canDelete, canTransfer, onCommand, onEdit, onDelete, onSelect, onMediaDrop }: { device: Television; volumePending: boolean; commandPending: boolean; pendingMedia?: PendingMediaTransfer; mediaReady?: MediaReadyState; mediaError?: MediaErrorState; selected: boolean; canControl: boolean; canEdit: boolean; canDelete: boolean; canTransfer: boolean; onCommand: (evento: AdminCommandEvent, datos: Record<string, unknown>) => boolean; onEdit: () => void; onDelete: () => void; onSelect: () => void; onMediaDrop: (file: File, kind: "IMAGE" | "VIDEO", contentId?: string) => void }) {
+  const isStandaloneImage = !device.playlistId && device.contentType === "IMAGE";
   const [isDraggingVideo, setIsDraggingVideo] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [showVolumeValue, setShowVolumeValue] = useState(false);
-  const [volumeBeforeMute, setVolumeBeforeMute] = useState(device.volume > 0 ? device.volume : 50);
   const [awaitingMedia, setAwaitingMedia] = useState<{ baseline: number; errorBaseline: number; file: File; kind: "IMAGE" | "VIDEO" } | null>(null);
   const { transfer, progress, isUploading, error: dropError } = useMediaTransfer();
   const connectionStatus = device.connectionStatus ?? (device.status === "offline" ? "offline" : "online");
@@ -684,31 +789,17 @@ function DeviceCard({ device, pendingMedia, mediaReady, mediaError, selected, ch
   const lastContactLabel = device.lastContactAt
     ? new Intl.DateTimeFormat("es-BO", { dateStyle: "short", timeStyle: "short" }).format(new Date(device.lastContactAt))
     : "No disponible";
-  const commandData = { tv_id: device.tvCode ?? device.id, ...(device.currentContentId ? { contenido_id: device.currentContentId } : {}) };
 
-  const sendQuickCommand = (event: AdminCommandEvent, changes: Partial<Television>, extra?: Record<string, unknown>) => {
-    if (onCommand(event, { ...commandData, ...extra })) onChange(changes);
+  const sendQuickCommand = (event: AdminCommandEvent, extra?: Record<string, unknown>) => {
+    onCommand(event === "media.show" ? "media.play" : event, { tv_id: device.tvCode ?? device.id, ...extra });
   };
 
   const toggleVideoPlayback = () => {
-    if (device.contentType === "IMAGE" || connectionStatus === "offline" || isWaitingForTv) return;
+    if (!canControl || isStandaloneImage || connectionStatus === "offline" || isWaitingForTv || commandPending) return;
     const playing = device.playbackState === "playing";
-    sendQuickCommand(playing ? "media.pause" : "media.play", {
-      status: playing ? "available" : "playing",
-      playbackState: playing ? "paused" : "playing",
-    });
+    sendQuickCommand(playing ? "media.pause" : "media.play");
   };
 
-  const toggleMute = () => {
-    if (connectionStatus === "offline" || isWaitingForTv) return;
-    if (device.volume > 0) {
-      setVolumeBeforeMute(device.volume);
-      sendQuickCommand("media.volume", { volume: 0 }, { volumen: 0 });
-      return;
-    }
-    const restoredVolume = Math.max(1, volumeBeforeMute);
-    sendQuickCommand("media.volume", { volume: restoredVolume }, { volumen: restoredVolume });
-  };
 
   useEffect(() => {
     if (!awaitingMedia || !mediaReady || mediaReady.sequence <= awaitingMedia.baseline) return;
@@ -727,12 +818,14 @@ function DeviceCard({ device, pendingMedia, mediaReady, mediaError, selected, ch
   }, [awaitingMedia, mediaError]);
 
   const handleDragOver = (event: DragEvent<HTMLElement>) => {
+    if (!canTransfer) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     setIsDraggingVideo(true);
   };
 
   const handleDrop = async (event: DragEvent<HTMLElement>) => {
+    if (!canTransfer) return;
     event.preventDefault();
     setIsDraggingVideo(false);
     const file = event.dataTransfer.files[0];
@@ -755,7 +848,6 @@ function DeviceCard({ device, pendingMedia, mediaReady, mediaError, selected, ch
       <span className="flex min-h-16 items-start justify-between gap-2">
         <span className="min-w-0">
           <span className="flex items-center gap-2">
-            <input type="checkbox" checked={checked} onClick={(event) => event.stopPropagation()} onChange={onToggleChecked} aria-label={`Seleccionar ${device.name}`} className="size-4 accent-[#146be8]" />
             <strong className="block truncate text-base">{device.name}</strong>
             </span>
           <small className="mt-1 block truncate text-sm text-[#85878a]">
@@ -768,13 +860,14 @@ function DeviceCard({ device, pendingMedia, mediaReady, mediaError, selected, ch
         </span>
         <span className="relative ml-auto flex shrink-0 items-center gap-1">
           <em className={`flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium not-italic ${connectionChipStyles[connectionStatus]}`}><i className={`size-2 rounded-full ${connectionDotStyles[connectionStatus]}`} />{connectionLabels[connectionStatus]}</em>
-          <button type="button" onClick={(event) => { event.stopPropagation(); setMenuOpen((open) => !open); }} aria-label="Abrir acciones del televisor" aria-expanded={menuOpen} className="grid size-8 cursor-pointer place-items-center rounded-full border-0 bg-transparent text-[#69716e] transition hover:bg-[#eef2f0] hover:text-[#202925]"><MoreVertical size={20} /></button>
-          {menuOpen && <div className="absolute right-0 top-9 z-30 w-40 overflow-hidden rounded-xl border border-[#dfe4e2] bg-white p-1.5 shadow-[0_12px_32px_rgba(20,35,29,0.18)]" onClick={(event) => event.stopPropagation()}>
-            <button type="button" onClick={() => { setMenuOpen(false); onEdit(); }} className="flex h-10 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-white px-3 text-left text-sm font-medium hover:bg-[#f2f6f4]"><Pencil size={16} className="text-[#146be8]" /> Editar</button>
-            <button type="button" onClick={() => { setMenuOpen(false); onDelete(); }} className="flex h-10 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-white px-3 text-left text-sm font-medium text-[#c43b42] hover:bg-[#fff0f0]"><Trash2 size={16} className="text-[#c43b42]" /> Eliminar</button></div>}
+          {(canEdit || canDelete) && <button type="button" onClick={(event) => { event.stopPropagation(); setMenuOpen((open) => !open); }} aria-label="Abrir acciones del televisor" aria-expanded={menuOpen} className="grid size-8 cursor-pointer place-items-center rounded-full border-0 bg-transparent text-[#69716e] transition hover:bg-[#eef2f0] hover:text-[#202925]"><MoreVertical size={20} /></button>}
+          {menuOpen && (canEdit || canDelete) && <div className="absolute right-0 top-9 z-30 w-40 overflow-hidden rounded-xl border border-[#dfe4e2] bg-white p-1.5 shadow-[0_12px_32px_rgba(20,35,29,0.18)]" onClick={(event) => event.stopPropagation()}>
+            {canEdit && <button type="button" onClick={() => { setMenuOpen(false); onEdit(); }} className="flex h-10 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-white px-3 text-left text-sm font-medium hover:bg-[#f2f6f4]"><Pencil size={16} className="text-[#146be8]" /> Editar</button>}
+            {canDelete && <button type="button" onClick={() => { setMenuOpen(false); onDelete(); }} className="flex h-10 w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-white px-3 text-left text-sm font-medium text-[#c43b42] hover:bg-[#fff0f0]"><Trash2 size={16} className="text-[#c43b42]" /> Eliminar</button>}</div>}
         </span>
       </span>
-      <span className={`relative mt-3 flex h-37.5 items-center justify-center overflow-hidden rounded-[14px] bg-[#090c0b] text-white shadow-[0_8px_18px_rgba(0,0,0,0.16)] ${device.contentType !== "IMAGE" && connectionStatus !== "offline" && !isWaitingForTv ? "cursor-pointer" : ""}`} onClick={(event) => { if (device.contentType === "IMAGE") return; event.stopPropagation(); toggleVideoPlayback(); }}>
+      <span className={`relative mt-3 flex h-37.5 items-center justify-center overflow-hidden rounded-[14px] bg-[#090c0b] text-white shadow-[0_8px_18px_rgba(0,0,0,0.16)] ${!isStandaloneImage && connectionStatus !== "offline" && !isWaitingForTv ? "cursor-pointer" : ""}`} onClick={(event) => { if (isStandaloneImage) return; event.stopPropagation(); toggleVideoPlayback(); }}>
+        <CurrentMediaPoster key={`${device.currentContentId}:${device.contentType}`} device={device} />
         {connectionStatus === "offline" ? (
           <span className="flex flex-col items-center justify-center gap-1.5 text-center text-white/75">
             <MonitorOff aria-hidden="true" size={42} strokeWidth={1.5} />
@@ -782,23 +875,16 @@ function DeviceCard({ device, pendingMedia, mediaReady, mediaError, selected, ch
             <small className="text-[11px] text-white/55">Último contacto:</small>
             <small className="text-[11px] text-white/70">{lastContactLabel}</small>
           </span>
-        ) : device.contentType === "IMAGE"
+        ) : isStandaloneImage
           ? <ImageIcon aria-hidden="true" size={58} strokeWidth={1.7} className="text-[#66706e]" />
-          : <button type="button" disabled={isWaitingForTv} onClick={(event) => { event.stopPropagation(); toggleVideoPlayback(); }} aria-label={device.playbackState === "playing" ? "Pausar video" : "Reproducir video"} aria-pressed={device.playbackState === "playing"} className="grid size-12 cursor-pointer place-items-center rounded-full border border-white/30 bg-black/35 text-white backdrop-blur-sm transition hover:scale-105 hover:bg-black/55 disabled:cursor-not-allowed disabled:opacity-40">{device.playbackState === "playing" ? <Pause size={23} fill="currentColor" /> : <Play size={23} fill="currentColor" />}</button>}
-        {connectionStatus !== "offline" && device.contentType !== "IMAGE" && (
+          : canControl ? <button type="button" disabled={isWaitingForTv || commandPending} onClick={(event) => { event.stopPropagation(); toggleVideoPlayback(); }} aria-label={device.playbackState === "playing" ? "Pausar video" : "Reproducir video"} aria-pressed={device.playbackState === "playing"} className="grid size-12 cursor-pointer place-items-center rounded-full border border-white/30 bg-black/35 text-white backdrop-blur-sm transition hover:scale-105 hover:bg-black/55 disabled:cursor-not-allowed disabled:opacity-40">{device.playbackState === "playing" ? <Pause size={23} fill="currentColor" /> : <Play size={23} fill="currentColor" />}</button> : <MonitorPlay size={46} className="text-white/35" />}
+        {canControl && connectionStatus !== "offline" && !isStandaloneImage && (
           <span className="absolute inset-x-0 bottom-0 bg-linear-to-t from-black/95 via-black/65 to-transparent px-3 pt-8 pb-2.5">
             {/* <span className="mb-2 block h-1 overflow-hidden rounded-full bg-white/35"><i className="block h-full rounded-full bg-[#146be8]" style={{ width: device.playbackState === "playing" ? "42%" : `${Math.min(device.playbackPosition ?? 0, 100)}%` }} /></span> */}
             <span className="flex items-center gap-2 text-[11px] text-white/90">
               {device.playbackState === "playing" ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
               <span>{formatPlaybackTime(device.playbackPosition)} / 00:00</span>
-              <span className="relative ml-auto flex items-center gap-1.5" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => { event.stopPropagation(); setShowVolumeValue(true); }} onMouseEnter={() => setShowVolumeValue(true)} onMouseLeave={() => setShowVolumeValue(false)}>
-                <span className="sr-only">Volumen {device.volume}%</span>
-                <button type="button" disabled={isWaitingForTv} onClick={(event) => { event.preventDefault(); event.stopPropagation(); toggleMute(); }} aria-label={device.volume === 0 ? `Restaurar volumen a ${volumeBeforeMute}` : "Silenciar TV"} title={device.volume === 0 ? "Restaurar volumen" : "Silenciar"} className="grid size-5 shrink-0 cursor-pointer place-items-center border-0 bg-transparent p-0 text-white disabled:cursor-not-allowed disabled:opacity-45">{device.volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}</button>
-                <span className="relative flex w-14 items-center">
-                  {showVolumeValue && <output className="absolute -top-8 grid min-w-8 -translate-x-1/2 place-items-center rounded-md bg-white px-1.5 py-1 text-[10px] font-bold text-[#202226] shadow-md" style={{ left: `${device.volume}%` }}>{device.volume}</output>}
-                  <input type="range" min={0} max={100} step={1} value={device.volume} aria-label={`Volumen ${device.volume}%`} disabled={isWaitingForTv} onFocus={() => setShowVolumeValue(true)} onBlur={() => setShowVolumeValue(false)} onChange={(event) => { const volume = Number(event.target.value); sendQuickCommand("media.volume", { volume }, { volumen: volume }); }} className="card-volume-range w-14 cursor-pointer disabled:cursor-not-allowed disabled:opacity-45" style={{ background: `linear-gradient(to right, #1887f2 0 ${device.volume}%, rgba(255,255,255,.42) ${device.volume}% 100%)` }} />
-                </span>
-              </span>
+              <TvVolumeControl volume={device.volume} pending={volumePending} disabled={isWaitingForTv || commandPending || !canControl} onCommit={(volume) => onCommand("media.volume", { tv_id: device.tvCode ?? device.id, volumen: volume })} />
             </span>
           </span>
         )}
@@ -821,42 +907,37 @@ function DeviceCard({ device, pendingMedia, mediaReady, mediaError, selected, ch
           </span>
         )}
       </span>
+      {commandPending && <small role="status" className="mt-2 block text-[#146be8]">Orden pendiente de confirmación…</small>}
       {dropError && <small role="alert" className="mt-2 block rounded-lg bg-[#fff0f0] px-3 py-2 text-sm text-[#b4232c]">{dropError}</small>}
       <span className="block pt-3">
-        <strong className="block truncate text-sm font-medium">{device.currentContent}</strong>
+        <strong title={device.currentContent} className="block break-words text-sm font-medium">{device.currentContent}</strong>
         <small className="mt-1 flex items-center gap-2 truncate text-[#747b7d]"><i className={`size-2.5 shrink-0 rounded-full ${playbackActivityColor(device)}`} /><span className="truncate">{playbackActivityLabel(device)}</span></small>
       </span>
-      <div className="relative mt-3 flex items-center gap-2 border-t border-[#e8ebe9] pt-3" onClick={(event) => event.stopPropagation()}>
-        {device.contentType === "IMAGE" ? (
-          <button type="button" disabled={connectionStatus === "offline" || isWaitingForTv} onClick={() => sendQuickCommand(device.playbackState === "playing" ? "media.hide" : "media.show", { status: device.playbackState === "playing" ? "available" : "playing", playbackState: device.playbackState === "playing" ? "stopped" : "playing" })} className="flex h-9 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-[#dce2df] bg-white text-sm font-medium text-[#303537] disabled:opacity-40">{device.playbackState === "playing" ? <EyeOff size={16} className="text-[#146be8]" /> : <ImageIcon size={16} className="text-[#146be8]" />}{device.playbackState === "playing" ? "Ocultar" : "Mostrar"}</button>
-        ) : (
-          <><button type="button" disabled={connectionStatus === "offline" || isWaitingForTv} onClick={() => { const playing = device.playbackState === "playing"; sendQuickCommand(playing ? "media.pause" : "media.play", { status: playing ? "available" : "playing", playbackState: playing ? "paused" : "playing" }); }} className="flex h-9 flex-1 cursor-pointer items-center justify-center gap-1 rounded-lg border border-[#dce2df] bg-white px-2 text-xs font-medium text-[#303537] disabled:opacity-40">
-            {device.playbackState === "playing" ? <Pause size={20} className="text-[#146be8]" /> : <Play size={20} className="text-[#146be8]" />}{device.playbackState === "playing" ? "Pausar" : "Play"}</button>
-            <button type="button" disabled={connectionStatus === "offline" || isWaitingForTv} onClick={() => sendQuickCommand("media.stop", { status: "available", playbackState: "stopped" })} className="flex h-9 flex-1 cursor-pointer items-center justify-center gap-1 rounded-lg border border-[#dce2df] bg-white px-2 text-xs font-medium text-[#303537] disabled:opacity-40"><CircleStop size={20} className="text-[#d23f47]" />Detener</button>
-            <button type="button" disabled={connectionStatus === "offline" || isWaitingForTv || !device.currentContentId} aria-pressed={Boolean(device.repeat)} onClick={(event) => { event.stopPropagation(); const repetir = !device.repeat; sendQuickCommand("media.repeat", { repeat: repetir }, { repetir }); }} style={{ color: device.repeat ? "#ffffff" : "#303537" }} className={`flex h-9 flex-1 cursor-pointer items-center justify-center gap-1 rounded-lg border px-2 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${device.repeat ? "border-[#0b57b7] bg-[#0b63ce] hover:bg-[#084faa]" : "border-[#dce2df] bg-white hover:bg-[#f2f6fb]"}`}><Repeat2 size={20} className={device.repeat ? "text-white" : "text-[#4c6f9d]"} />Repetir</button></>
-        )}
-      </div>
+      {canControl && <div className="relative mt-3 grid grid-cols-2 gap-2 border-t border-[#e8ebe9] pt-3" onClick={(event) => event.stopPropagation()}>
+        <button type="button" disabled={connectionStatus === "offline" || isWaitingForTv || commandPending} onClick={() => { const playing = device.playbackState === "playing"; const image = isStandaloneImage; sendQuickCommand(image ? playing ? "media.hide" : "media.show" : playing ? "media.pause" : "media.play"); }} className="flex h-9 items-center justify-center gap-1 rounded-lg border border-[#dce2df] bg-white px-2 text-xs font-medium text-[#303537] disabled:opacity-40">{device.playbackState === "playing" ? <Pause size={18} className="text-[#146be8]" /> : <Play size={18} className="text-[#146be8]" />}{isStandaloneImage ? device.playbackState === "playing" ? "Ocultar" : "Mostrar" : device.playbackState === "playing" ? "Pausar" : "Play"}</button>
+        <button type="button" disabled={connectionStatus === "offline" || isWaitingForTv} onClick={() => sendQuickCommand("media.stop")} className="flex h-9 items-center justify-center gap-1 rounded-lg border border-[#dce2df] bg-white px-2 text-xs font-medium text-[#303537] disabled:opacity-40"><CircleStop size={18} className="text-[#d23f47]" />Detener</button>
+        <button type="button" disabled={connectionStatus === "offline" || isWaitingForTv || commandPending || (!device.currentContentId && !device.playlistId)} aria-pressed={Boolean(device.repeat)} onClick={() => { const repetir = !device.repeat; sendQuickCommand("media.repeat", { repetir }); }} className={"flex h-9 items-center justify-center gap-1 rounded-lg border px-2 text-xs font-semibold disabled:opacity-40 " + (device.repeat ? "border-[#08783f] bg-[#08783f] text-white" : "border-[#dce2df] bg-white text-[#303537] hover:bg-[#f2f6fb]")}><Repeat2 size={18} />Repetir</button>
+        <button type="button" disabled={connectionStatus === "offline" || isWaitingForTv || commandPending || (!device.currentContentId && !device.playlistId)} aria-pressed={Boolean(device.shuffle)} onClick={() => { const aleatorio = !device.shuffle; sendQuickCommand("media.shuffle", { aleatorio }); }} className={"flex h-9 items-center justify-center gap-1 rounded-lg border px-2 text-xs font-semibold disabled:opacity-40 " + (device.shuffle ? "border-[#08783f] bg-[#08783f] text-white" : "border-[#dce2df] bg-white text-[#303537] hover:bg-[#f2f6fb]")}><Shuffle size={18} />Aleatorio</button>
+      </div>}
     </article>
   );
 }
 
-function ControlPanel({ device, isMediaPending, mediaReady, mediaError, onCommand, onChange }: { device: Television; isMediaPending: boolean; mediaReady?: MediaReadyState; mediaError?: MediaErrorState; onCommand: (evento: AdminCommandEvent, datos: Record<string, unknown>) => boolean; onChange: (changes: Partial<Television>) => void }) {
+export function ControlPanel({ device, isMediaPending, mediaReady, mediaError, onCommand }: { device: Television; isMediaPending: boolean; mediaReady?: MediaReadyState; mediaError?: MediaErrorState; onCommand: (evento: AdminCommandEvent, datos: Record<string, unknown>) => boolean;  }) {
   const [commandError, setCommandError] = useState<string | null>(null);
   const connectionStatus = device.connectionStatus ?? (device.status === "offline" ? "offline" : "online");
   const indicatorStyle = connectionStatus === "online" ? statusStyles[device.status] : connectionStyles[connectionStatus];
   const playbackLabel = device.playbackState === "paused" ? "Pausado" : device.playbackState === "stopped" ? "Detenido" : device.playbackState === "playing" ? "Reproduciendo" : "Listo";
-  const isImage = device.contentType === "IMAGE";
+  const isImage = !device.playlistId && device.contentType === "IMAGE";
   const isImageVisible = isImage && device.playbackState === "playing";
   const tvId = device.tvCode ?? device.id;
-  const contentId = mediaReady && typeof mediaReady.content.id === "string" ? mediaReady.content.id : device.currentContentId;
   const transferReady = Boolean(mediaReady || device.currentContentId || device.currentContent !== "Sin reproducción");
   const lastContact = device.lastContactAt ? new Intl.DateTimeFormat("es-BO", { dateStyle: "short", timeStyle: "short" }).format(new Date(device.lastContactAt)) : "No disponible";
 
-  const sendCommand = (evento: AdminCommandEvent, changes?: Partial<Television>, extra?: Record<string, unknown>) => {
-    const sent = onCommand(evento, { tv_id: tvId, ...(contentId ? { contenido_id: contentId } : {}), ...extra });
+  const sendCommand = (evento: AdminCommandEvent, extra?: Record<string, unknown>) => {
+    const sent = onCommand(evento === "media.show" ? "media.play" : evento, { tv_id: tvId, ...extra });
     if (!sent) return setCommandError("No se pudo enviar la orden porque Socket.IO está desconectado.");
     setCommandError(null);
-    if (changes) onChange(changes);
   };
 
   return (
@@ -884,7 +965,7 @@ function ControlPanel({ device, isMediaPending, mediaReady, mediaError, onComman
         </div>
         
         <div className="mt-3 flex items-center gap-2">
-          {isImage ? <button type="button" disabled={connectionStatus === "offline" || isMediaPending} onClick={() => sendCommand(isImageVisible ? "media.hide" : "media.show", { status: isImageVisible ? "available" : "playing", playbackState: isImageVisible ? "stopped" : "playing" })} className="flex h-9 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#dce2df] bg-white text-sm font-semibold disabled:opacity-40">{isImageVisible ? <EyeOff size={16} /> : <ImageIcon size={16} />}{isImageVisible ? "Ocultar" : "Mostrar"}</button> : <><button type="button" disabled={connectionStatus === "offline" || isMediaPending} onClick={() => sendCommand(device.playbackState === "playing" ? "media.pause" : "media.play", { status: device.playbackState === "playing" ? "available" : "playing", playbackState: device.playbackState === "playing" ? "paused" : "playing" })} className="flex h-9 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#dce2df] bg-white text-sm font-semibold disabled:opacity-40">{device.playbackState === "playing" ? <Pause size={16} /> : <Play size={16} />}{device.playbackState === "playing" ? "Pausar" : "Reproducir"}</button><button type="button" disabled={connectionStatus === "offline" || isMediaPending} onClick={() => sendCommand("media.stop", { status: "available", playbackState: "stopped" })} className="grid size-9 cursor-pointer place-items-center rounded-lg border border-[#dce2df] bg-white disabled:opacity-40"><CircleStop size={16} /></button></>}
+          {isImage ? <button type="button" disabled={connectionStatus === "offline" || isMediaPending} onClick={() => sendCommand(isImageVisible ? "media.hide" : "media.show")} className="flex h-9 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#dce2df] bg-white text-sm font-semibold disabled:opacity-40">{isImageVisible ? <EyeOff size={16} /> : <ImageIcon size={16} />}{isImageVisible ? "Ocultar" : "Mostrar"}</button> : <><button type="button" disabled={connectionStatus === "offline" || isMediaPending} onClick={() => sendCommand(device.playbackState === "playing" ? "media.pause" : "media.play")} className="flex h-9 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#dce2df] bg-white text-sm font-semibold disabled:opacity-40">{device.playbackState === "playing" ? <Pause size={16} /> : <Play size={16} />}{device.playbackState === "playing" ? "Pausar" : "Reproducir"}</button><button type="button" disabled={connectionStatus === "offline" || isMediaPending} onClick={() => sendCommand("media.stop")} className="grid size-9 cursor-pointer place-items-center rounded-lg border border-[#dce2df] bg-white disabled:opacity-40"><CircleStop size={16} /></button></>}
         </div>
       </section>
 
@@ -904,4 +985,11 @@ function ControlPanel({ device, isMediaPending, mediaReady, mediaError, onComman
       {commandError && <p role="alert" className="mt-3 rounded-lg bg-[#fff0f0] px-3 py-2 text-sm text-[#b4232c]">{commandError}</p>}
     </aside>
   );
+}
+
+function CurrentMediaPoster({ device }: { device: Television }) {
+  const [failed, setFailed] = useState(false);
+  const url = device.currentContentId ? `/api/contenidos/${encodeURIComponent(device.currentContentId)}/archivo` : undefined;
+  if (!url || failed) return null;
+  return <span className="pointer-events-none absolute inset-0" aria-hidden="true">{device.contentType === "IMAGE" ? <Image src={url} alt="" fill unoptimized onError={() => setFailed(true)} className="object-contain" /> : <video src={url + "#t=0.1"} preload="metadata" muted playsInline onError={() => setFailed(true)} className="h-full w-full object-contain" />}</span>;
 }
