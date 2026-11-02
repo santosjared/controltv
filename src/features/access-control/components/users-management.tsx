@@ -52,7 +52,10 @@ export function UsersManagement() {
   const [form, setForm] = useState<UserForm>(emptyUser);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const users = useMemo(() => usersPage?.items ?? [], [usersPage?.items]);
-  const roles = roleOptions;
+  const roles = useMemo(
+    () => roleOptions.filter((role) => role.nombre.trim().toUpperCase() !== "SUPER_ADMIN"),
+    [roleOptions],
+  );
   const total = usersPage?.total ?? users.length;
   const totalPages = usersPage?.totalPages ?? 1;
   const commitSearch = useDebouncedCallback((value: string) => {
@@ -71,10 +74,6 @@ export function UsersManagement() {
     setEditing("new");
   };
   const openEdit = (user: BackendUser) => {
-    if (isProtectedUser(user)) {
-      setFeedback({ type: "error", text: "El usuario SUPER_ADMIN está protegido y no puede cambiarse de rol." });
-      return;
-    }
     setFeedback(null);
     setForm({ name: user.nombre_completo, ci: user.cedula_identidad, username: user.usuario, password: "", roleId: user.rol?.id ?? "", status: user.estado });
     setEditing(user);
@@ -82,9 +81,12 @@ export function UsersManagement() {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const isNew = editing === "new";
-    const payload = { nombre_completo: form.name.trim(), cedula_identidad: form.ci.trim(), usuario: form.username.trim(), role_id: form.roleId, estado: form.status, ...(form.password ? { password: form.password } : {}) };
+    const isSuperAdminEdit = !isNew && editing !== null && isProtectedUser(editing);
+    const payload = isSuperAdminEdit
+      ? { usuario: form.username.trim(), ...(form.password ? { password: form.password } : {}) }
+      : { nombre_completo: form.name.trim(), cedula_identidad: form.ci.trim(), usuario: form.username.trim(), role_id: form.roleId, estado: form.status, ...(form.password ? { password: form.password } : {}) };
     try {
-      if (isNew) await createUser({ ...payload, password: form.password }).unwrap();
+      if (isNew) await createUser({ nombre_completo: form.name.trim(), cedula_identidad: form.ci.trim(), usuario: form.username.trim(), role_id: form.roleId, estado: form.status, password: form.password }).unwrap();
       else if (editing) await updateUser({ id: editing.id, ...payload }).unwrap();
       setEditing(null); setFeedback({ type: "success", text: isNew ? "Usuario registrado correctamente." : "Usuario actualizado correctamente." });
     } catch (error) { setFeedback({ type: "error", text: errorMessage(error, "No se pudo guardar el usuario.") }); }
@@ -120,7 +122,7 @@ export function UsersManagement() {
           {users.map((user) => <tr key={user.id} className="border-t border-[#edf0ee] hover:bg-[#fafcfb]">
             <td className="px-5 py-4"><span className="flex items-center gap-3"><i className="grid size-10 place-items-center rounded-full bg-[#e7f5ee] not-italic text-[#08783f]"><UserRound size={19} /></i><span><strong className="block">{user.nombre_completo}</strong><small className="block text-[#78827e]">{user.usuario} · C.I. {user.cedula_identidad}</small></span></span></td>
             <td className="px-5 py-4"><span className="inline-flex items-center gap-2">{user.rol?.nombre || "Sin rol"}{isProtectedUser(user) && <LockKeyhole size={14} className="text-[#9a6a0e]" aria-label="Rol protegido" />}</span></td><td className="px-5 py-4"><span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${user.estado === "ACTIVO" ? "bg-[#e2f6ec] text-[#08734c]" : "bg-[#f0f1f1] text-[#68706d]"}`}><i className={`size-2 rounded-full ${user.estado === "ACTIVO" ? "bg-[#16ad72]" : "bg-[#9ba19f]"}`} />{user.estado === "ACTIVO" ? "Activo" : "Inactivo"}</span></td>
-            <td className="px-5 py-4 text-sm text-[#66736d]">{lastAccess(user.ultimo_acceso)}</td><td className="px-5 py-4 text-right"><span className="inline-flex gap-1"><button type="button" onClick={() => openEdit(user)} disabled={isProtectedUser(user)} title={isProtectedUser(user) ? "SUPER_ADMIN no puede cambiarse de rol" : `Editar ${user.nombre_completo}`} className="inline-flex size-9 items-center justify-center rounded-lg text-[#146be8] hover:bg-[#edf4ff] disabled:cursor-not-allowed disabled:bg-[#f1f3f2] disabled:text-[#a7afab] disabled:opacity-70" aria-label={`Editar ${user.nombre_completo}`}>{isProtectedUser(user) ? <LockKeyhole size={16} /> : <Pencil size={17} />}</button><button type="button" onClick={() => setDeleting(user)} disabled={isProtectedUser(user)} title={isProtectedUser(user) ? "SUPER_ADMIN no puede eliminarse" : `Eliminar ${user.nombre_completo}`} className="inline-flex size-9 items-center justify-center rounded-lg text-[#c73535] hover:bg-[#fff0f0] disabled:cursor-not-allowed disabled:bg-[#f1f3f2] disabled:text-[#a7afab] disabled:opacity-70" aria-label={`Eliminar ${user.nombre_completo}`}><Trash2 size={17} /></button></span></td>
+            <td className="px-5 py-4 text-sm text-[#66736d]">{lastAccess(user.ultimo_acceso)}</td><td className="px-5 py-4 text-right"><span className="inline-flex gap-1"><button type="button" onClick={() => openEdit(user)} title={isProtectedUser(user) ? "Editar usuario y contraseña" : `Editar ${user.nombre_completo}`} className="inline-flex size-9 items-center justify-center rounded-lg text-[#146be8] hover:bg-[#edf4ff]" aria-label={`Editar ${user.nombre_completo}`}><Pencil size={17} /></button><button type="button" onClick={() => setDeleting(user)} disabled={isProtectedUser(user)} title={isProtectedUser(user) ? "SUPER_ADMIN no puede eliminarse" : `Eliminar ${user.nombre_completo}`} className="inline-flex size-9 items-center justify-center rounded-lg text-[#c73535] hover:bg-[#fff0f0] disabled:cursor-not-allowed disabled:bg-[#f1f3f2] disabled:text-[#a7afab] disabled:opacity-70" aria-label={`Eliminar ${user.nombre_completo}`}>{isProtectedUser(user) ? <LockKeyhole size={16} /> : <Trash2 size={17} />}</button></span></td>
           </tr>)}
         </tbody>
       </table></div>
@@ -137,15 +139,16 @@ function Pagination({ page, totalPages, loading, onChange }: { page: number; tot
 
 function UserDialog({ editing, form, roles, saving, setForm, onClose, onSubmit }: { editing: BackendUser | "new"; form: UserForm; roles: BackendRole[]; saving: boolean; setForm: (value: UserForm) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
   const [showPassword, setShowPassword] = useState(false);
+  const isSuperAdminEdit = editing !== "new" && isProtectedUser(editing);
   const updateName = (name: string) => setForm({ ...form, name, username: editing === "new" ? buildUsername(name) : form.username });
   const updateCi = (ci: string) => setForm({ ...form, ci, password: editing === "new" ? buildPassword(ci) : form.password });
   const regenerate = () => setForm({ ...form, username: buildUsername(form.name), password: buildPassword(form.ci) });
   return <div className="fixed inset-0 z-60 grid place-items-center overflow-y-auto bg-black/55 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form onSubmit={onSubmit} className="my-auto w-full max-w-lg overflow-hidden rounded-3xl bg-white shadow-2xl">
-    <header className="flex items-center justify-between border-b border-[#e4e8e6] px-6 py-5"><span><h2 className="text-xl font-bold">{editing === "new" ? "REGISTRAR USUARIO" : "EDITAR USUARIO"}</h2><p className="mt-1 text-sm text-[#7a8280]">Datos de acceso y rol dentro del sistema</p></span><button type="button" onClick={onClose} className="grid size-9 place-items-center rounded-full bg-[#f1f3f2]" aria-label="Cerrar"><X size={18} /></button></header>
-    <div className="space-y-4 p-6"><Field label="Nombre completo" value={form.name} onChange={updateName} /><Field label="Cédula de identidad" value={form.ci} onChange={updateCi} />
-      <section className="rounded-2xl border border-[#cfe5da] bg-[#f2faf6] p-4"><div className="mb-3 flex items-center justify-between gap-3"><span><b className="block text-sm">Credenciales de acceso</b><small className="text-[#687a72]">Se generan automáticamente y puedes modificarlas.</small></span><button type="button" onClick={regenerate} className="grid size-9 shrink-0 place-items-center rounded-lg text-[#08783f] hover:bg-[#dcefe5]" title="Volver a generar"><RefreshCw size={17} /></button></div><Field label="Usuario" value={form.username} onChange={(username) => setForm({ ...form, username })} /><label className="mt-3 block"><b className="mb-1.5 block text-sm">Contraseña {editing !== "new" && <small className="font-normal text-[#75807b]">(opcional)</small>}</b><span className="flex h-12 items-center rounded-xl border border-[#d8dfdc] bg-white px-4 focus-within:border-[#08783f]"><input required={editing === "new"} type={showPassword ? "text" : "password"} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} className="min-w-0 flex-1 bg-transparent outline-none" autoComplete="new-password" /><button type="button" onClick={() => setShowPassword((visible) => !visible)} className="grid size-8 place-items-center text-[#65756e]" aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></span></label></section>
-      <label className="block"><b className="mb-1.5 block text-sm">Rol</b><select required value={form.roleId} onChange={(event) => setForm({ ...form, roleId: event.target.value })} className="h-12 w-full rounded-xl border border-[#d8dfdc] px-4"><option value="" disabled>Seleccionar rol</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.nombre}</option>)}</select></label>
-      <label className="block"><b className="mb-1.5 block text-sm">Estado</b><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as UserStatus })} className="h-12 w-full rounded-xl border border-[#d8dfdc] px-4"><option value="ACTIVO">Activo</option><option value="INACTIVO">Inactivo</option></select></label>
+    <header className="flex items-center justify-between border-b border-[#e4e8e6] px-6 py-5"><span><h2 className="text-xl font-bold">{editing === "new" ? "REGISTRAR USUARIO" : "EDITAR USUARIO"}</h2><p className="mt-1 text-sm text-[#7a8280]">{isSuperAdminEdit ? "Solo se puede cambiar el usuario y la contraseña." : "Datos de acceso y rol dentro del sistema"}</p></span><button type="button" onClick={onClose} className="grid size-9 place-items-center rounded-full bg-[#f1f3f2]" aria-label="Cerrar"><X size={18} /></button></header>
+    <div className="space-y-4 p-6">{!isSuperAdminEdit && <><Field label="Nombre completo" value={form.name} onChange={updateName} /><Field label="Cédula de identidad" value={form.ci} onChange={updateCi} /></>}
+      <section className="rounded-2xl border border-[#cfe5da] bg-[#f2faf6] p-4"><div className="mb-3 flex items-center justify-between gap-3"><span><b className="block text-sm">Credenciales de acceso</b><small className="text-[#687a72]">{isSuperAdminEdit ? "Actualiza las credenciales de esta cuenta protegida." : "Se generan automáticamente y puedes modificarlas."}</small></span>{!isSuperAdminEdit && <button type="button" onClick={regenerate} className="grid size-9 shrink-0 place-items-center rounded-lg text-[#08783f] hover:bg-[#dcefe5]" title="Volver a generar"><RefreshCw size={17} /></button>}</div><Field label="Usuario" value={form.username} onChange={(username) => setForm({ ...form, username })} /><label className="mt-3 block"><b className="mb-1.5 block text-sm">Contraseña {editing !== "new" && <small className="font-normal text-[#75807b]">(opcional)</small>}</b><span className="flex h-12 items-center rounded-xl border border-[#d8dfdc] bg-white px-4 focus-within:border-[#08783f]"><input required={editing === "new"} type={showPassword ? "text" : "password"} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} className="min-w-0 flex-1 bg-transparent outline-none" autoComplete="new-password" /><button type="button" onClick={() => setShowPassword((visible) => !visible)} className="grid size-8 place-items-center text-[#65756e]" aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></span></label></section>
+      {!isSuperAdminEdit && <><label className="block"><b className="mb-1.5 block text-sm">Rol</b><select required value={form.roleId} onChange={(event) => setForm({ ...form, roleId: event.target.value })} className="h-12 w-full rounded-xl border border-[#d8dfdc] px-4"><option value="" disabled>Seleccionar rol</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.nombre}</option>)}</select></label>
+      <label className="block"><b className="mb-1.5 block text-sm">Estado</b><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as UserStatus })} className="h-12 w-full rounded-xl border border-[#d8dfdc] px-4"><option value="ACTIVO">Activo</option><option value="INACTIVO">Inactivo</option></select></label></>}
     </div><footer className="flex justify-end gap-3 border-t border-[#e4e8e6] px-6 py-4"><button type="button" onClick={onClose} className="h-11 rounded-xl border border-[#d8dfdc] px-5">Cancelar</button><button disabled={saving} className="flex h-11 items-center gap-2 rounded-xl bg-[#08783f] px-5 font-semibold text-white disabled:opacity-60">{saving ? <LoaderCircle size={18} className="animate-spin" /> : <Check size={18} />}{saving ? "Guardando..." : editing === "new" ? "Registrar" : "Guardar cambios"}</button></footer>
   </form></div>;
 }

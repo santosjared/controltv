@@ -159,7 +159,7 @@ export const accessControlApi = createApi({
       query: (body) => ({ url: "usuarios", method: "POST", body }),
       invalidatesTags: [{ type: "Users", id: "LIST" }],
     }),
-    updateUser: builder.mutation<BackendUser, SaveUser & { id: string }>({
+    updateUser: builder.mutation<BackendUser, Partial<SaveUser> & { id: string }>({
       query: ({ id, ...body }) => ({ url: `usuarios/${encodeURIComponent(id)}`, method: "PUT", body }),
       invalidatesTags: (_result, _error, { id }) => [{ type: "Users", id }, { type: "Users", id: "LIST" }],
     }),
