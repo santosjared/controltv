@@ -1,7 +1,7 @@
 import { refreshBackendSession } from "@/features/auth/refresh-session";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { ACCESS_TOKEN_COOKIE, decodeSessionUser, encodeSessionUser, hasValidAccessToken, normalizeLoginResponse, REFRESH_TOKEN_COOKIE, SESSION_COOKIE } from "@/features/auth/auth-config";
+import { authCookiesSecure, ACCESS_TOKEN_COOKIE, decodeSessionUser, encodeSessionUser, hasValidAccessToken, normalizeLoginResponse, REFRESH_TOKEN_COOKIE, SESSION_COOKIE } from "@/features/auth/auth-config";
 
 export const runtime = "nodejs";
 
@@ -30,7 +30,7 @@ export async function GET() {
       if (!session) return clearSession(NextResponse.json({ message: "El usuario no tiene un rol activo." }, { status: 401 }));
       session.user.persistent = storedUser.persistent;
       const response = NextResponse.json({ user: session.user }, { headers: { "Cache-Control": "no-store" } });
-      response.cookies.set(SESSION_COOKIE, encodeSessionUser(session.user), { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", ...(storedUser.persistent ? { maxAge: 60 * 60 * 24 * 30 } : {}) });
+      response.cookies.set(SESSION_COOKIE, encodeSessionUser(session.user), { httpOnly: true, sameSite: "lax", secure: authCookiesSecure(), path: "/", ...(storedUser.persistent ? { maxAge: 60 * 60 * 24 * 30 } : {}) });
       return response;
     } catch { return NextResponse.json({ message: "No se pudo validar la sesión." }, { status: 503 }); }
   }
@@ -42,7 +42,7 @@ export async function GET() {
     const session = await refreshBackendSession(refreshToken, storedUser, baseUrl);
     if (!session) return clearSession(NextResponse.json({ message: "No se pudo renovar la sesión." }, { status: 401 }));
 
-    const options = { httpOnly: true, sameSite: "lax" as const, secure: process.env.NODE_ENV === "production", path: "/" };
+    const options = { httpOnly: true, sameSite: "lax" as const, secure: authCookiesSecure(), path: "/" };
     const response = NextResponse.json({ user: session.user });
     response.cookies.set(ACCESS_TOKEN_COOKIE, session.accessToken, { ...options, maxAge: session.expiresIn });
     response.cookies.set(REFRESH_TOKEN_COOKIE, session.refreshToken, { ...options, ...(session.user.persistent ? { maxAge: session.refreshExpiresIn } : {}) });

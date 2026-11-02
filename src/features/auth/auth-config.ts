@@ -79,3 +79,9 @@ export function canAccessPath(user: AuthUser, pathname: string) {
   const route = Object.keys(routePermissions).filter((path) => path === "/" ? pathname === "/" : pathname.startsWith(path)).sort((a, b) => b.length - a.length)[0];
   return route ? user.permissions.includes(routePermissions[route]) : true;
 }
+
+// Docker en red local puede usar HTTP; HTTPS conserva Secure por defecto.
+export function authCookiesSecure() {
+  const configured = process.env.AUTH_COOKIE_SECURE;
+  return configured === "true" || (configured !== "false" && process.env.NODE_ENV === "production");
+}

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { ACCESS_TOKEN_COOKIE, encodeSessionUser, normalizeLoginResponse, REFRESH_TOKEN_COOKIE, SESSION_COOKIE } from "@/features/auth/auth-config";
+import { authCookiesSecure, ACCESS_TOKEN_COOKIE, encodeSessionUser, normalizeLoginResponse, REFRESH_TOKEN_COOKIE, SESSION_COOKIE } from "@/features/auth/auth-config";
 
 export const runtime = "nodejs";
 
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     const session = normalizeLoginResponse(payload as Parameters<typeof normalizeLoginResponse>[0]);
     if (!session) return NextResponse.json({ message: "La respuesta de autenticación no contiene un usuario activo, rol o token válido." }, { status: 502 });
     session.user.persistent = body.remember === true;
-    const options = { httpOnly: true, sameSite: "lax" as const, secure: process.env.NODE_ENV === "production", path: "/" };
+    const options = { httpOnly: true, sameSite: "lax" as const, secure: authCookiesSecure(), path: "/" };
     const response = NextResponse.json({ user: session.user });
     response.cookies.set(ACCESS_TOKEN_COOKIE, session.accessToken, { ...options, maxAge: session.expiresIn });
     response.cookies.set(REFRESH_TOKEN_COOKIE, session.refreshToken, { ...options, ...(body.remember ? { maxAge: session.refreshExpiresIn } : {}) });

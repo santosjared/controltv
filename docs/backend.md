@@ -2,8 +2,10 @@
 
 - Backend: `http://localhost:3000`, endpoint confirmado `GET /tvs`.
 - En `.env`: `API_BASE_URL=http://localhost:3000` (solo servidor).
-- Para transferencias con progreso: `NEXT_PUBLIC_API_BASE_URL=http://localhost:3000`.
+- Las transferencias con progreso usan `/api/tvs/.../transferencias` en el mismo origen; Next.js agrega el token HTTP-only al llamar al backend.
 - Socket.IO namespace: `NEXT_PUBLIC_SOCKET_URL=http://localhost:3000/tvs`.
+- En Render configura `APP_URL=https://controltv.onrender.com`. La ruta que entrega el token del socket acepta ese origen y el host reenviado por el proxy de Render.
+- Para un despliegue separado en Render usa `API_BASE_URL=https://TU-BACKEND.onrender.com` y `NEXT_PUBLIC_SOCKET_URL=https://TU-BACKEND.onrender.com/tvs`. `NEXT_PUBLIC_SOCKET_URL` se incorpora durante el build, por lo que debes redeplegar después de cambiarla. Mantén `AUTH_COOKIE_SECURE=true` en HTTPS.
 - Único evento Socket.IO escuchado: `admin.message`.
 - Arranca Next.js en otro puerto: `pnpm dev --port 3001`.
 - Reinicia Next.js tras modificar `.env`. `.env.example` contiene la configuración de ejemplo.
@@ -59,3 +61,5 @@ Los formatos de envío y recepción para playlists, videos e imágenes están en
 [socket-playback.md](socket-playback.md). Ese contrato conserva `admin.message` y
 los controles existentes y el formato agrupado con `tv_ids`, `request_id` y
 resultados individuales `media.result`, confirmado por el backend.
+
+Para levantar el stack con Docker Compose, consulta `docs/docker.md` en el repositorio `controltv-backend`. En Docker, Socket.IO usa `/tvs` y Nginx reenvía `/socket.io/`; no se graba localhost en el bundle.

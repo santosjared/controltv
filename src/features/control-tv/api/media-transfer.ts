@@ -24,8 +24,7 @@ function getErrorMessage(xhr: XMLHttpRequest): string {
 }
 
 export function uploadMediaToTv({ file, tvId, signal, onProgress }: UploadMediaOptions): Promise<unknown> {
-  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-  if (!baseUrl) return Promise.reject(new Error("Falta NEXT_PUBLIC_API_BASE_URL en .env."));
+  const baseUrl = "/api";
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -71,8 +70,7 @@ export function uploadMediaToTv({ file, tvId, signal, onProgress }: UploadMediaO
 }
 
 export function uploadMediaToTvs({ file, tvIds, signal, onProgress }: UploadMediaToManyOptions): Promise<unknown> {
-  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-  if (!baseUrl) return Promise.reject(new Error("Falta NEXT_PUBLIC_API_BASE_URL en .env."));
+  const baseUrl = "/api";
   if (tvIds.length === 0) return Promise.reject(new Error("No hay televisores seleccionados para la transferencia."));
 
   return new Promise((resolve, reject) => {

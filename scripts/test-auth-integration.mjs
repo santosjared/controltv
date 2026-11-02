@@ -23,6 +23,8 @@ function load(file) {
     if (name === 'server-only') return {};
     if (name === 'next/headers') return {cookies: async () => store};
     if (name === 'next/server') return {NextResponse: {json: response}};
+    if (name === '../session/route') return load('src/app/api/auth/session/route.ts');
+    if (name.includes('media-library/api/server-proxy')) return { proxyMedia: (path, _request, method) => response({ path, method }) };
     if (name.endsWith('auth-config')) return load('src/features/auth/auth-config.ts');
     if (name.endsWith('refresh-session')) return load('src/features/auth/refresh-session.ts');
     throw new Error('Unexpected import: ' + name);
@@ -86,3 +88,30 @@ assert.equal(result.cookies.get(config.REFRESH_TOKEN_COOKIE).httpOnly,true);
 assert.equal(result.cookies.get(config.REFRESH_TOKEN_COOKIE).maxAge,3600);
 assert.equal((await result.json()).user.persistent,true);
 console.log('OK: login, cookies, permisos actuales, renovación única concurrente, token expirado, Recordarme, logout y fallo temporal del backend.');
+
+runtime.NODE_ENV = 'production';
+runtime.AUTH_COOKIE_SECURE = 'false';
+assert.equal(config.authCookiesSecure(),false,'HTTP local Docker debe permitir cookies sin Secure');
+runtime.AUTH_COOKIE_SECURE = 'true';
+assert.equal(config.authCookiesSecure(),true);
+delete runtime.AUTH_COOKIE_SECURE;
+assert.equal(config.authCookiesSecure(),true,'Producción conserva Secure por defecto');
+console.log('OK: cookies HTTP Docker y HTTPS de producción.');
+
+const multipart = new Request('http://panel.test/api/tvs/transferencias', { method: 'POST', body: new FormData() });
+const groupTransfer = load('src/app/api/tvs/transferencias/route.ts');
+assert.deepEqual(await (await groupTransfer.POST(multipart)).json(), {path:'tvs/transferencias',method:'POST'});
+const singleTransfer = load('src/app/api/tvs/[id]/transferencias/route.ts');
+assert.deepEqual(await (await singleTransfer.POST(multipart, {params:Promise.resolve({id:'TV-001'})})).json(), {path:'tvs/TV-001/transferencias',method:'POST'});
+console.log('OK: rutas de transferencia por el proxy autenticado del panel.');
+
+const socketToken = load('src/app/api/auth/socket-token/route.ts');
+assert(socketToken.requestAllowedOrigins(new Request('http://internal/api/auth/socket-token', {
+  headers: {
+    origin: 'https://controltv.onrender.com',
+    'x-forwarded-host': 'controltv.onrender.com',
+    'x-forwarded-proto': 'https',
+  },
+})).has('https://controltv.onrender.com'), 'Render debe aceptar su origen público reenviado');
+assert(!socketToken.requestAllowedOrigins(new Request('http://internal/api/auth/socket-token')).has('https://otro-sitio.test'), 'Un origen externo no debe ser confiable');
+console.log('OK: validación de origen público detrás del proxy de Render.');

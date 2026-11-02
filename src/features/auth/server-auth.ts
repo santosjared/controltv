@@ -1,7 +1,7 @@
 import { refreshBackendSession } from "./refresh-session";
 import "server-only";
 import { cookies } from "next/headers";
-import { ACCESS_TOKEN_COOKIE, decodeSessionUser, encodeSessionUser, hasValidAccessToken, REFRESH_TOKEN_COOKIE, SESSION_COOKIE } from "./auth-config";
+import { authCookiesSecure, ACCESS_TOKEN_COOKIE, decodeSessionUser, encodeSessionUser, hasValidAccessToken, REFRESH_TOKEN_COOKIE, SESSION_COOKIE } from "./auth-config";
 
 async function resolveAccessToken() {
   const cookieStore = await cookies();
@@ -14,7 +14,7 @@ async function resolveAccessToken() {
   try {
     const session = await refreshBackendSession(refreshToken, user, baseUrl);
     if (!session) return null;
-    const options = { httpOnly: true, sameSite: "lax" as const, secure: process.env.NODE_ENV === "production", path: "/" };
+    const options = { httpOnly: true, sameSite: "lax" as const, secure: authCookiesSecure(), path: "/" };
     cookieStore.set(ACCESS_TOKEN_COOKIE, session.accessToken, { ...options, maxAge: session.expiresIn });
     cookieStore.set(REFRESH_TOKEN_COOKIE, session.refreshToken, { ...options, ...(user.persistent ? { maxAge: session.refreshExpiresIn } : {}) });
     cookieStore.set(SESSION_COOKIE, encodeSessionUser(session.user), { ...options, ...(user.persistent ? { maxAge: session.refreshExpiresIn } : {}) });
