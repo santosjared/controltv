@@ -329,6 +329,9 @@ export function ControlTvDashboard() {
               });
             }}
           />}
+          <div className="xl:hidden">
+            <DashboardLibraryPanel selectedTvCount={selectedPlaybackTargets(devices, selectedIds).length} socketConnected={isSocketConnected} sendPending={contentDeliveryPending} onSelectionChange={setBroadcastSource} onSend={(source) => handlePlayback("prepare", undefined, source)} />
+          </div>
           {commandFeedback && <p role="alert" className="rounded-xl bg-[#fff0f0] px-4 py-3 text-sm text-[#b4232c]">{commandFeedback.text}</p>}
           {(connectionError || commandError) && <p role="alert" className="rounded-xl bg-[#fff0f0] px-4 py-3 text-sm text-[#b4232c]">{connectionError ?? commandError}</p>}
           <PlaybackRequestsPanel requests={requests} />
@@ -362,7 +365,9 @@ export function ControlTvDashboard() {
             </footer>}
           </section>
         </div>
-        <DashboardLibraryPanel selectedTvCount={selectedPlaybackTargets(devices, selectedIds).length} socketConnected={isSocketConnected} sendPending={contentDeliveryPending} onSelectionChange={setBroadcastSource} onSend={(source) => handlePlayback("prepare", undefined, source)} />
+        <div className="hidden xl:block">
+          <DashboardLibraryPanel selectedTvCount={selectedPlaybackTargets(devices, selectedIds).length} socketConnected={isSocketConnected} sendPending={contentDeliveryPending} onSelectionChange={setBroadcastSource} onSend={(source) => handlePlayback("prepare", undefined, source)} />
+        </div>
       </div>
       {deviceToRegister && <RegisterDeviceDialog device={deviceToRegister} onCancel={() => setDeviceToRegister(null)} onRegistered={() => { setRegisteredPendingIds((current) => [...current, deviceToRegister.id]); setDeviceToRegister(null); }} />}
       {deviceToEdit && <EditDeviceDialog device={deviceToEdit} onClose={() => setDeviceToEdit(null)} />}
