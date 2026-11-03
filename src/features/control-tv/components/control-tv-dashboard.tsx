@@ -136,6 +136,12 @@ export function ControlTvDashboard() {
   const { user, can, logout } = useAuth();
   const { data = emptyTelevisions, isLoading, isFetching, error, refetch } = useGetTelevisionsQuery(undefined, { skip: !can("televisions.view"), refetchOnFocus: true, refetchOnReconnect: true });
   const { socketDevices, onlineTvIds, lowSignalTvIds, hasStatusSnapshot, mediaReadyByTvId, mediaErrorByTvId, latestMediaError, dismissMediaError, mediaControlByTvId, sendAdminCommand, sendPlayback, isSocketConnected, requests, pendingTvIds, connectionError, commandError } = useConnectedTvs();
+  // Solo las órdenes que incluyen contenido implican una descarga en la TV.
+  // Los controles globales siguen disponibles mientras esa descarga se completa.
+  const contentDeliveryPending = Object.values(requests).some((request) =>
+    (Boolean(request.command.datos.playlist_id) || Boolean(request.command.datos.contenido_id))
+    && Object.values(request.targets).some((target) => target.status === "pending"),
+  );
   // Estado optimista local; las confirmaciones posteriores de la TV tienen prioridad.
   const [overrides, setOverrides] = useState<Record<string, Partial<Television>>>({});
   const sourceDevices = error ? emptyTelevisions : data;
@@ -309,7 +315,6 @@ export function ControlTvDashboard() {
             onSelectedIdsChange={setSelectedIds}
             selectedSource={broadcastSource}
             socketConnected={isSocketConnected}
-            commandPending={pendingTvIds.length > 0}
             onPlayback={handlePlayback}
             mediaReadyByTvId={mediaReadyByTvId}
             mediaErrorByTvId={mediaErrorByTvId}
@@ -357,7 +362,7 @@ export function ControlTvDashboard() {
             </footer>}
           </section>
         </div>
-        <DashboardLibraryPanel selectedTvCount={selectedPlaybackTargets(devices, selectedIds).length} socketConnected={isSocketConnected} onSelectionChange={setBroadcastSource} onSend={(source) => handlePlayback("prepare", undefined, source)} />
+        <DashboardLibraryPanel selectedTvCount={selectedPlaybackTargets(devices, selectedIds).length} socketConnected={isSocketConnected} sendPending={contentDeliveryPending} onSelectionChange={setBroadcastSource} onSend={(source) => handlePlayback("prepare", undefined, source)} />
       </div>
       {deviceToRegister && <RegisterDeviceDialog device={deviceToRegister} onCancel={() => setDeviceToRegister(null)} onRegistered={() => { setRegisteredPendingIds((current) => [...current, deviceToRegister.id]); setDeviceToRegister(null); }} />}
       {deviceToEdit && <EditDeviceDialog device={deviceToEdit} onClose={() => setDeviceToEdit(null)} />}
@@ -586,7 +591,7 @@ export function CurrentTime() {
   );
 }
 
-function GlobalBroadcast({ devices, selectedIds, onSelectedIdsChange, selectedSource, socketConnected, commandPending, onPlayback, mediaReadyByTvId, mediaErrorByTvId, onMediaAssigned }: { devices: Television[]; selectedIds: string[]; onSelectedIdsChange: (ids: string[]) => void; selectedSource: PlaybackSelection | null; socketConnected: boolean; commandPending: boolean; onPlayback: (action: PlaybackAction, enabled?: boolean) => boolean; mediaReadyByTvId: Record<string, MediaReadyState>; mediaErrorByTvId: Record<string, MediaErrorState>; onMediaAssigned: (devices: Television[], file: File, kind: "IMAGE" | "VIDEO", readyBaselines: Record<string, number>, errorBaselines: Record<string, number>) => void }) {
+function GlobalBroadcast({ devices, selectedIds, onSelectedIdsChange, selectedSource, socketConnected, onPlayback, mediaReadyByTvId, mediaErrorByTvId, onMediaAssigned }: { devices: Television[]; selectedIds: string[]; onSelectedIdsChange: (ids: string[]) => void; selectedSource: PlaybackSelection | null; socketConnected: boolean; onPlayback: (action: PlaybackAction, enabled?: boolean) => boolean; mediaReadyByTvId: Record<string, MediaReadyState>; mediaErrorByTvId: Record<string, MediaErrorState>; onMediaAssigned: (devices: Television[], file: File, kind: "IMAGE" | "VIDEO", readyBaselines: Record<string, number>, errorBaselines: Record<string, number>) => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewExpanded, setPreviewExpanded] = useState(false);
@@ -682,11 +687,11 @@ function GlobalBroadcast({ devices, selectedIds, onSelectedIdsChange, selectedSo
 
       {selectedSource && <p className="mt-4 text-sm text-[#52665c]">Contenido: <strong>{selectedSource.name}</strong></p>}
       <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-[#dfe7e3] bg-[#f8fbf9] p-3 sm:flex-row sm:items-center">
-        <button type="button" disabled={selectedDevices.length === 0 || !socketConnected || commandPending} onClick={() => onPlayback("resume")} title={commandPending ? "Esperando la respuesta de los televisores" : "Reproducir en todos los televisores seleccionados"} className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-[#08783f] font-semibold text-white transition hover:bg-[#066734] disabled:cursor-not-allowed disabled:bg-[#a7c4b7]">{commandPending ? <LoaderCircle size={18} className="animate-spin" /> : <Play size={18} fill="currentColor" />}{commandPending ? "Enviando…" : "Reproducir"}</button>
-        <button type="button" disabled={selectedDevices.length === 0 || !socketConnected || commandPending} onClick={() => onPlayback("stop")} title={commandPending ? "Esperando la respuesta de los televisores" : undefined} className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-[#df7780] bg-white font-semibold text-[#c43d47] transition hover:bg-[#fff0f1] disabled:cursor-not-allowed disabled:opacity-45"><CircleStop size={18} fill="currentColor" />Detener</button>
+        <button type="button" disabled={selectedDevices.length === 0 || !socketConnected} onClick={() => onPlayback("resume")} title="Reproducir en todos los televisores seleccionados" className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-[#08783f] font-semibold text-white transition hover:bg-[#066734] disabled:cursor-not-allowed disabled:bg-[#a7c4b7]"><Play size={18} fill="currentColor" />Reproducir</button>
+        <button type="button" disabled={selectedDevices.length === 0 || !socketConnected} onClick={() => onPlayback("stop")} className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-[#df7780] bg-white font-semibold text-[#c43d47] transition hover:bg-[#fff0f1] disabled:cursor-not-allowed disabled:opacity-45"><CircleStop size={18} fill="currentColor" />Detener</button>
         <span className="hidden h-8 w-px bg-[#d5dfda] sm:block" />
-        <button type="button" aria-pressed={groupShuffle} disabled={selectedDevices.length === 0 || !socketConnected || commandPending} onClick={() => onPlayback("shuffle", !groupShuffle)} className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 ${groupShuffle ? "border-[#08783f] bg-[#e5f3ec] text-[#075f45]" : "border-transparent text-[#405149] hover:bg-[#edf4f1]"}`}><Shuffle size={18} />Aleatorio<span className={`relative ml-1 h-6 w-11 rounded-full transition ${groupShuffle ? "bg-[#0ba66f]" : "bg-[#c7d1cc]"}`}><i className={`absolute top-1 size-4 rounded-full bg-white shadow transition-all ${groupShuffle ? "left-6" : "left-1"}`} /></span></button>
-        <button type="button" aria-pressed={groupRepeat} disabled={selectedDevices.length === 0 || !socketConnected || commandPending} onClick={() => onPlayback("repeat", !groupRepeat)} className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 ${groupRepeat ? "border-[#08783f] bg-[#e5f3ec] text-[#075f45]" : "border-transparent text-[#405149] hover:bg-[#edf4f1]"}`}><Repeat2 size={18} />Repetir<span className={`relative ml-1 h-6 w-11 rounded-full transition ${groupRepeat ? "bg-[#0ba66f]" : "bg-[#c7d1cc]"}`}><i className={`absolute top-1 size-4 rounded-full bg-white shadow transition-all ${groupRepeat ? "left-6" : "left-1"}`} /></span></button>
+        <button type="button" aria-pressed={groupShuffle} disabled={selectedDevices.length === 0 || !socketConnected} onClick={() => onPlayback("shuffle", !groupShuffle)} className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 ${groupShuffle ? "border-[#08783f] bg-[#e5f3ec] text-[#075f45]" : "border-transparent text-[#405149] hover:bg-[#edf4f1]"}`}><Shuffle size={18} />Aleatorio<span className={`relative ml-1 h-6 w-11 rounded-full transition ${groupShuffle ? "bg-[#0ba66f]" : "bg-[#c7d1cc]"}`}><i className={`absolute top-1 size-4 rounded-full bg-white shadow transition-all ${groupShuffle ? "left-6" : "left-1"}`} /></span></button>
+        <button type="button" aria-pressed={groupRepeat} disabled={selectedDevices.length === 0 || !socketConnected} onClick={() => onPlayback("repeat", !groupRepeat)} className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border font-semibold transition disabled:cursor-not-allowed disabled:opacity-45 ${groupRepeat ? "border-[#08783f] bg-[#e5f3ec] text-[#075f45]" : "border-transparent text-[#405149] hover:bg-[#edf4f1]"}`}><Repeat2 size={18} />Repetir<span className={`relative ml-1 h-6 w-11 rounded-full transition ${groupRepeat ? "bg-[#0ba66f]" : "bg-[#c7d1cc]"}`}><i className={`absolute top-1 size-4 rounded-full bg-white shadow transition-all ${groupRepeat ? "left-6" : "left-1"}`} /></span></button>
       </div>
 
       <div className="hidden" aria-hidden="true">
