@@ -75,6 +75,17 @@ export function useConnectedTvs() {
   const dispatch = useCallback((command: PlaybackCommand): PlaybackSendResult => {
     const socket = socketRef.current;
     if (!canControl || !socket?.connected) return { sent: [], failed: command.datos.tv_ids, error: !canControl ? "Necesitas el permiso tvs.control." : "El socket está desconectado." };
+    const busyTvIds = command.datos.tv_ids.filter((tvId) =>
+      Object.values(requestsRef.current).some(
+        (request) => request.targets[tvId]?.status === "pending",
+      ),
+    );
+    if (busyTvIds.length)
+      return {
+        sent: [],
+        failed: command.datos.tv_ids,
+        error: "Hay una orden en proceso. Espera a que los televisores terminen de descargar o respondan.",
+      };
     publishRequests(registerRequest(requestsRef.current, command));
     setCommandError(null);
     const id = command.datos.request_id;
